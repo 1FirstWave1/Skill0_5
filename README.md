@@ -116,12 +116,6 @@ After training, merge FSDP sharded checkpoints into a single HuggingFace model:
 python scripts/model_merger.py --ckpt_path /path/to/global_step_N
 ```
 
-Or batch-merge all steps in a directory:
-
-```bash
-python scripts/model_merger_dir.py --ckpt_dir /path/to/checkpoint_dir --start_step 5 --end_step 200
-```
-
 ---
 
 ## Acknowledgement

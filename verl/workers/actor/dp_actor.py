@@ -31,7 +31,7 @@ from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
 import verl.utils.torch_functional as verl_F
 from verl import DataProto
-from verl.trainer.ppo.core_algos import agg_loss, compute_jsd_loss, compute_policy_loss, compute_policy_loss_gspo, compute_policy_loss_with_guide_reshaping, compute_policy_loss_with_luffy_shaping, kl_penalty
+from verl.trainer.ppo.core_algos import agg_loss, compute_jsd_loss, compute_policy_loss, compute_policy_loss_gspo, kl_penalty
 from verl.utils.debug import GPUMemoryLogger
 from verl.utils.device import get_device_name, get_torch_device, is_cuda_available, is_npu_available
 from verl.utils.fsdp_utils import FSDPModule, fsdp2_clip_grad_norm_
@@ -403,26 +403,11 @@ class DataParallelPPOActor(BasePPOActor):
         temperature = data.meta_info["temperature"]  # temperature must be in the data.meta_info to avoid silent error
         multi_turn = data.meta_info.get("multi_turn", False)
 
-        # Internalize prob dump config (set by trainer when guide is enabled)
-        internalize_dump_path = data.meta_info.get("internalize_dump_path", None)
-        internalize_global_step = data.meta_info.get("global_step", None)
-        _internalize_dumped = False  # only dump once per update_policy call
-
         select_keys = ["responses", "input_ids", "attention_mask", "position_ids", "old_log_probs", "advantages"]
         if multi_turn:
             select_keys.append("loss_mask")
         if self.config.use_kl_loss:
             select_keys.append("ref_log_prob")
-
-        guide_cfg = self.config.policy_loss.get("guide", {})
-        guide_active = guide_cfg.get("enabled", False)  # config says guide mode is on
-        guide_warmup_steps = guide_cfg.get("warmup_steps", 0)
-        guide_use_reshaping = guide_cfg.get("use_reshaping", True)  # False = always use PPO clip (no reshaping)
-        current_step = internalize_global_step if internalize_global_step is not None else 0
-        guide_loss_enabled = guide_active and guide_use_reshaping and (current_step >= guide_warmup_steps)  # reshaping loss active
-        is_warmup = guide_active and (not guide_loss_enabled)
-        if guide_active:
-            select_keys.extend(["plain_input_ids", "plain_attention_mask", "plain_position_ids"])
 
         batch = data.select(batch_keys=select_keys).batch
         has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
@@ -437,9 +422,7 @@ class DataParallelPPOActor(BasePPOActor):
             dataloader = batch.split(self.config.ppo_mini_batch_size)
 
         metrics = {}
-        # During guide warmup, use 1 epoch (standard on-policy); internalization phase uses configured ppo_epochs
-        effective_ppo_epochs = 1 if is_warmup else self.config.ppo_epochs
-        for epoch in range(effective_ppo_epochs):
+        for epoch in range(self.config.ppo_epochs):
             for batch_idx, data in enumerate(dataloader):
                 # split batch into micro_batches
                 mini_batch = data
@@ -486,81 +469,28 @@ class DataParallelPPOActor(BasePPOActor):
                     if entropy_coeff != 0:
                         calculate_entropy = True
 
-                    if guide_active and not is_warmup:
-                        # Forward on plain prompt for all sequences (internalization target)
-                        plain_micro = {**data}
-                        plain_micro["input_ids"] = data["plain_input_ids"]
-                        plain_micro["attention_mask"] = data["plain_attention_mask"]
-                        plain_micro["position_ids"] = data["plain_position_ids"]
-                        entropy, log_prob = self._forward_micro_batch(micro_batch=plain_micro, temperature=temperature, calculate_entropy=calculate_entropy)
-                        log_prob_plain = log_prob  # alias for metrics
-                    else:
-                        entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature, calculate_entropy=calculate_entropy)
+                    entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature, calculate_entropy=calculate_entropy)
 
                     loss_mode = self.config.policy_loss.get("loss_mode", "vanilla")
 
-                    if guide_loss_enabled:
-                        # Guide mode: shaping for all sequences (luffy or guide-reshaping)
-                        guide_shaping_fn = guide_cfg.get("shaping_fn", "guide")
-                        reshaping_quantile = self.config.policy_loss.guide.get("reshaping_quantile", 0.9)
-                        luffy_gamma = self.config.policy_loss.guide.get("luffy_gamma", 0.2)
-                        if guide_shaping_fn == "luffy":
-                            pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower = compute_policy_loss_with_luffy_shaping(
-                                old_log_prob=old_log_prob,
-                                log_prob=log_prob,
-                                advantages=advantages,
-                                response_mask=response_mask,
-                                cliprange=clip_ratio,
-                                cliprange_low=clip_ratio_low,
-                                cliprange_high=clip_ratio_high,
-                                clip_ratio_c=clip_ratio_c,
-                                loss_agg_mode=loss_agg_mode,
-                                gamma=luffy_gamma,
-                            )
-                        elif guide_shaping_fn == "none":
-                            pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower = compute_policy_loss(
-                                old_log_prob=old_log_prob,
-                                log_prob=log_prob,
-                                advantages=advantages,
-                                response_mask=response_mask,
-                                cliprange=clip_ratio,
-                                cliprange_low=clip_ratio_low,
-                                cliprange_high=clip_ratio_high,
-                                clip_ratio_c=clip_ratio_c,
-                                loss_agg_mode=loss_agg_mode,
-                            )
-                        else:
-                            pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower = compute_policy_loss_with_guide_reshaping(
-                                old_log_prob=old_log_prob,
-                                log_prob=log_prob,
-                                advantages=advantages,
-                                response_mask=response_mask,
-                                cliprange=clip_ratio,
-                                cliprange_low=clip_ratio_low,
-                                cliprange_high=clip_ratio_high,
-                                clip_ratio_c=clip_ratio_c,
-                                loss_agg_mode=loss_agg_mode,
-                                reshaping_quantile=reshaping_quantile,
-                            )
+                    if loss_mode == "vanilla":
+                        policy_loss_fn = compute_policy_loss
+                    elif loss_mode == "gspo":
+                        policy_loss_fn = compute_policy_loss_gspo
                     else:
-                        if loss_mode == "vanilla":
-                            policy_loss_fn = compute_policy_loss
-                        elif loss_mode == "gspo":
-                            policy_loss_fn = compute_policy_loss_gspo
-                        else:
-                            raise ValueError(f"Unsupported loss_mode: {loss_mode}")
+                        raise ValueError(f"Unsupported loss_mode: {loss_mode}")
 
-                        pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower = policy_loss_fn(
-                            old_log_prob=old_log_prob,
-                            log_prob=log_prob,
-                            advantages=advantages,
-                            response_mask=response_mask,
-                            cliprange=clip_ratio,
-                            cliprange_low=clip_ratio_low,
-                            cliprange_high=clip_ratio_high,
-                            clip_ratio_c=clip_ratio_c,
-                            loss_agg_mode=loss_agg_mode,
-                        )
+                    pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower = policy_loss_fn(
+                        old_log_prob=old_log_prob,
+                        log_prob=log_prob,
+                        advantages=advantages,
+                        response_mask=response_mask,
+                        cliprange=clip_ratio,
+                        cliprange_low=clip_ratio_low,
+                        cliprange_high=clip_ratio_high,
+                        clip_ratio_c=clip_ratio_c,
+                        loss_agg_mode=loss_agg_mode,
+                    )
 
                     if entropy_coeff != 0:
                         entropy_loss = agg_loss(loss_mat=entropy, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
@@ -594,53 +524,6 @@ class DataParallelPPOActor(BasePPOActor):
 
                     data["actor/pg_clipfrac"] = pg_clipfrac.detach().item()
                     data["actor/pg_clipfrac_lower"] = pg_clipfrac_lower.detach().item()
-
-                    if guide_active and not is_warmup:
-                        with torch.no_grad():
-                            # Log-space diff: log π_θ(plain) - log π_θold(guided)
-                            # This is the true signal of off-policy gap (negative = not yet internalized)
-                            log_ratio = log_prob_plain - old_log_prob  # (bs, resp_len)
-                            valid_log_ratio = log_ratio[response_mask.bool()]
-                            data["actor/guide_log_ratio_mean"] = valid_log_ratio.mean().item()
-                            data["actor/guide_log_ratio_median"] = valid_log_ratio.median().item()
-                            data["actor/guide_log_ratio_min"] = valid_log_ratio.min().item()
-                            data["actor/guide_log_ratio_max"] = valid_log_ratio.max().item()
-                            # Ratio-space stats (for compatibility / comparison)
-                            guide_ratio = torch.exp(log_ratio)
-                            valid_ratio = guide_ratio[response_mask.bool()]
-                            data["actor/guide_ratio_mean"] = valid_ratio.mean().item()
-                            # P90 — the reshaping anchor used in loss
-                            bs = guide_ratio.shape[0]
-                            p90_vals = []
-                            for i in range(bs):
-                                valid = guide_ratio[i][response_mask[i].bool()]
-                                if len(valid) > 0:
-                                    p90_vals.append(torch.quantile(valid.float(), 0.9).item())
-                            data["actor/guide_ratio_p90"] = sum(p90_vals) / max(len(p90_vals), 1)
-                            data["actor/guide_is_warmup"] = 1.0 if is_warmup else 0.0
-
-                            # Dump token-level prob comparison for internalization analysis
-                            if internalize_dump_path and not _internalize_dumped:
-                                _internalize_dumped = True
-                                try:
-                                    os.makedirs(internalize_dump_path, exist_ok=True)
-                                    dump_file = os.path.join(internalize_dump_path, f"step_{internalize_global_step}.jsonl")
-                                    with open(dump_file, "w") as f:
-                                        for i in range(bs):
-                                            mask_i = response_mask[i].bool()
-                                            valid_len = mask_i.sum().item()
-                                            record = {
-                                                "sample_idx": i,
-                                                "is_warmup": is_warmup,
-                                                "token_ids": responses[i][:valid_len].cpu().tolist(),
-                                                "log_prob_plain": log_prob_plain[i][:valid_len].cpu().tolist(),
-                                                "log_prob_guided": old_log_prob[i][:valid_len].cpu().tolist(),
-                                                "advantages": advantages[i][:valid_len].cpu().tolist(),
-                                            }
-                                            f.write(json.dumps(record) + "\n")
-                                    logger.info(f"[Internalize] Saved token-level probs to {dump_file} ({bs} samples, warmup={is_warmup})")
-                                except Exception as e:
-                                    logger.warning(f"[Internalize] Failed to save probs: {e}")
 
                     append_to_dict(metrics, data)
 

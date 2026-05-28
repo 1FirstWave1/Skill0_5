@@ -48,13 +48,13 @@ class SearchEnvironmentManager(EnvironmentManagerBase):
     """
     def __init__(self, envs, projection_f, config):
         self.memory = SearchMemory()
-        self.guide_internalize = config.env.get('guide_internalize', False)
+        self.guide_internalize = True
         self.exclude_hints = config.env.get('exclude_hints', False)
-        # Store original values for HDPO mode restoration
-        self._orig_guide_internalize = self.guide_internalize
+        # Store original values for mode restoration
+        self._orig_guide_internalize = True
         self._orig_exclude_hints = self.exclude_hints
 
-        # Two-phase contrastive probe (used by _utilize_step / _ours_step)
+        # Two-phase contrastive probe
         base_group_n = config.env.rollout.n if config.env.rollout.get('n', 0) > 0 else 1
         self.group_n = base_group_n
         self._contrastive_probe_mode = False
@@ -328,13 +328,13 @@ class SearchEnvironmentManager(EnvironmentManagerBase):
 class AlfWorldEnvironmentManager(EnvironmentManagerBase):
     def __init__(self, envs, projection_f, config):
         self.memory = SimpleMemory()
-        self.guide_internalize = config.env.get('guide_internalize', False)
+        self.guide_internalize = True
         self.exclude_hints = config.env.get('exclude_hints', False)
-        # Store original values for HDPO mode restoration
-        self._orig_guide_internalize = self.guide_internalize
+        # Store original values for mode restoration
+        self._orig_guide_internalize = True
         self._orig_exclude_hints = self.exclude_hints
 
-        # Two-phase contrastive probe (used by _utilize_step / _ours_step)
+        # Two-phase contrastive probe
         base_group_n = config.env.rollout.n if config.env.rollout.get('n', 0) > 0 else 1
         self.group_n = base_group_n
         self._contrastive_probe_mode = False

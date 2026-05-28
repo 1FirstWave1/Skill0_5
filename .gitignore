@@ -11,3 +11,6 @@ wandb/
 outputs/
 *.log
 .DS_Store
+
+# Debug scripts (local only)
+scripts/debug*

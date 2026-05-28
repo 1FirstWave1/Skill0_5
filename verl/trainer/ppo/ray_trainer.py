@@ -61,7 +61,10 @@ from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seql
 from verl.utils.torch_functional import masked_mean
 from verl.utils.tracking import ValidationGenerationsLogger
 from verl.workers.rollout.async_server import AsyncLLMServerManager
-from gigpo import core_gigpo
+try:
+    from gigpo import core_gigpo
+except ImportError:
+    core_gigpo = None
 
 from agent_system.multi_turn_rollout import TrajectoryCollector, adjust_batch
 
@@ -292,31 +295,20 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         # Check if contrastive mode provides context types for probe-based advantage
         contrastive_context_types = kwargs.get('contrastive_context_types', None)
         if contrastive_context_types is not None:
-            use_decomposed = kwargs.get('use_decomposed_contrastive', False)
-            if use_decomposed:
-                omega = kwargs.get('contrastive_omega', 1.0)
-                ema_delta = kwargs.get('ema_delta', None)
-                adv2_clip = kwargs.get('adv2_clip', 3.0)
-                advantages, returns = core_algos.compute_grpo_decomposed_contrastive_advantage(
-                    token_level_rewards=data.batch["token_level_rewards"],
-                    response_mask=grpo_calculation_mask,
-                    index=data.non_tensor_batch["uid"],
-                    traj_index=data.non_tensor_batch['traj_uid'],
-                    contrastive_context_types=contrastive_context_types,
-                    omega=omega,
-                    norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
-                    ema_delta=ema_delta,
-                    adv2_clip=adv2_clip,
-                )
-            else:
-                advantages, returns = core_algos.compute_grpo_contrastive_outcome_advantage(
-                    token_level_rewards=data.batch["token_level_rewards"],
-                    response_mask=grpo_calculation_mask,
-                    index=data.non_tensor_batch["uid"],
-                    traj_index=data.non_tensor_batch['traj_uid'],
-                    contrastive_context_types=contrastive_context_types,
-                    norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
-                )
+            omega = kwargs.get('contrastive_omega', 1.0)
+            ema_delta = kwargs.get('ema_delta', None)
+            adv2_clip = kwargs.get('adv2_clip', 3.0)
+            advantages, returns = core_algos.compute_grpo_decomposed_contrastive_advantage(
+                token_level_rewards=data.batch["token_level_rewards"],
+                response_mask=grpo_calculation_mask,
+                index=data.non_tensor_batch["uid"],
+                traj_index=data.non_tensor_batch['traj_uid'],
+                contrastive_context_types=contrastive_context_types,
+                omega=omega,
+                norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
+                ema_delta=ema_delta,
+                adv2_clip=adv2_clip,
+            )
         else:
             # Call compute_grpo_outcome_advantage with parameters matching its definition
             advantages, returns = core_algos.compute_grpo_outcome_advantage(
@@ -454,25 +446,15 @@ class RayPPOTrainer:
         self.val_envs_ood = val_envs_ood
         self.traj_collector = traj_collector
 
-        # Sliding window for adaptive routing (ours mode)
+        # Sliding window for adaptive routing
         ours_cfg = config.env.get('ours', {})
         self._routing_window_size = ours_cfg.get('window_size', 5)
         self._routing_window = deque(maxlen=self._routing_window_size)  # stores per-step non-zero mean
         self._routing_threshold = None  # Will be computed from window
-        self._ema_delta = None  # EMA of easy-task delta (skill - noskill), initialized on first easy step
-        # Sliding window option for delta baseline (alternative to EMA)
+        # Sliding window for delta baseline (cross-task skill utilization)
         utilize_cfg = config.env.get('utilize', {})
-        self._delta_baseline_mode = utilize_cfg.get('delta_baseline_mode', 'ema')  # 'ema' or 'window'
         delta_window_size = utilize_cfg.get('delta_window_size', 5)
         self._delta_window = deque(maxlen=delta_window_size)
-
-        # Dual distillation state: sliding windows for adaptive scheduling
-        dual_cfg = config.env.get('dual_distill', {})
-        dual_window_size = dual_cfg.get('window_size', 5)
-        self._dual_intern_window = deque(maxlen=dual_window_size)
-        self._dual_robust_window = deque(maxlen=dual_window_size)
-        self._dual_intern_count = 0   # cumulative guided branch activations
-        self._dual_robust_count = 0   # cumulative noskill branch activations
 
         self.hybrid_engine = config.actor_rollout_ref.hybrid_engine
         assert self.hybrid_engine, "Currently, only support hybrid engine"
@@ -1555,1484 +1537,6 @@ class RayPPOTrainer:
         global_balance_stats = log_seqlen_unbalance(seqlen_list=global_seqlen_lst, partitions=global_partition_lst, prefix=logging_prefix)
         metrics.update(global_balance_stats)
 
-    def _utilize_step(self, gen_batch, timing_raw, metrics):
-        """Utilize-only ablation: contrastive GRPO (skill vs no-skill).
-
-        Phase 1: Skill rollout (all envs get specific skills, context_type=top_k)
-        Phase 2: No-skill probe (all envs get no specific skills, context_type=no_skill)
-                 Same tasks replayed via reset_info, same uids via uid_base.
-        Returns the batch and reward_extra_infos_dict.
-        """
-        rollout_n = self.config.actor_rollout_ref.rollout.n
-
-        # ── Phase 1: Skill rollout ──
-        with _timer("gen_skill", timing_raw):
-            skill_output = self.traj_collector.multi_turn_loop(
-                gen_batch=gen_batch,
-                actor_rollout_wg=self.actor_rollout_wg,
-                envs=self.envs,
-                is_train=True,
-            )
-
-        # Capture reset_info and uid_base from Phase 1
-        reset_info = self.envs.get_last_reset_info()
-
-        # Extract unique uids (one per task) from Phase 1
-        # skill_output has batch_size = train_data_size * rollout_n steps,
-        # uid is repeated across steps of the same trajectory.
-        # We need the unique uid per task (one uid shared by rollout_n trajectories).
-        phase1_uids = skill_output.non_tensor_batch['uid']
-        seen = set()
-        uid_base = []
-        for uid in phase1_uids:
-            if uid not in seen:
-                seen.add(uid)
-                uid_base.append(uid)
-        uid_base = np.array(uid_base, dtype=object)
-
-        print(f"[Utilize] Phase 1 done: {len(skill_output.batch['input_ids'])} samples, "
-              f"{len(uid_base)} tasks")
-
-        # Dump Phase 1 (skill) trajectories immediately (before balance_batch reorders)
-        rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
-        if rollout_data_dir:
-            skill_inputs = self.tokenizer.batch_decode(skill_output.batch["prompts"], skip_special_tokens=True)
-            skill_outputs_text = self.tokenizer.batch_decode(skill_output.batch["responses"], skip_special_tokens=True)
-            skill_scores = [float(x) for x in skill_output.non_tensor_batch['episode_rewards']]
-            self._dump_generations(
-                inputs=skill_inputs, outputs=skill_outputs_text, scores=skill_scores,
-                reward_extra_infos_dict={}, dump_path=rollout_data_dir,
-                traj_uids=skill_output.non_tensor_batch.get('traj_uid', None),
-                uids=skill_output.non_tensor_batch.get('uid', None),
-            )
-
-        # ── Phase 2: No-skill probe ──
-        with _timer("gen_noskill", timing_raw):
-            self.envs.set_contrastive_probe(True)
-            noskill_output = self.traj_collector.multi_turn_loop(
-                gen_batch=gen_batch,
-                actor_rollout_wg=self.actor_rollout_wg,
-                envs=self.envs,
-                is_train=True,
-                reset_info=reset_info,
-                uid_base=uid_base,
-            )
-            self.envs.set_contrastive_probe(False)
-
-        print(f"[Utilize] Phase 2 done: {len(noskill_output.batch['input_ids'])} samples")
-
-        # Dump Phase 2 (noskill) trajectories
-        if rollout_data_dir:
-            noskill_dump_path = os.path.join(rollout_data_dir, "noskill")
-            noskill_inputs = self.tokenizer.batch_decode(noskill_output.batch["prompts"], skip_special_tokens=True)
-            noskill_outputs_text = self.tokenizer.batch_decode(noskill_output.batch["responses"], skip_special_tokens=True)
-            noskill_scores = [float(x) for x in noskill_output.non_tensor_batch['episode_rewards']]
-            self._dump_generations(
-                inputs=noskill_inputs, outputs=noskill_outputs_text, scores=noskill_scores,
-                reward_extra_infos_dict={}, dump_path=noskill_dump_path,
-                traj_uids=noskill_output.non_tensor_batch.get('traj_uid', None),
-                uids=noskill_output.non_tensor_batch.get('uid', None),
-            )
-
-        # ── Merge ──
-        merged_batch = DataProto.concat([skill_output, noskill_output])
-
-        print(f"[Utilize] Merged: {len(merged_batch.batch['input_ids'])} total samples")
-
-        # ── Reward & Advantage on merged batch (need noskill rewards as baseline) ──
-        merged_batch = adjust_batch(self.config, merged_batch)
-        merged_batch.batch["response_mask"] = compute_response_mask(merged_batch)
-
-        # Reward (on merged batch — need noskill reward values for advantage baseline)
-        with _timer("reward", timing_raw):
-            reward_tensor, reward_extra_infos_dict = compute_reward(merged_batch, self.reward_fn)
-
-        # Advantage computation on merged batch
-        with _timer("adv", timing_raw):
-            merged_batch.batch["token_level_scores"] = reward_tensor
-
-            # Apply invalid action penalty BEFORE advantage computation so that
-            # both noskill_mean and skill scores include format penalties.
-            # Metrics (valid_action_ratio) will be computed later on phase1 only.
-            if self.config.actor_rollout_ref.actor.get('use_invalid_action_penalty', True):
-                merged_batch, _ = apply_invalid_action_penalty(
-                    merged_batch,
-                    invalid_action_penalty_coef=self.config.actor_rollout_ref.actor.invalid_action_penalty_coef,
-                )
-
-            print(f"{list(reward_extra_infos_dict.keys())=}")
-            if reward_extra_infos_dict:
-                merged_batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
-
-            # Contrastive metrics (on merged batch — these are already split by context_type)
-            contrastive_context_types = merged_batch.non_tensor_batch.get('context_type', None)
-            if contrastive_context_types is not None:
-                episode_rewards_arr = merged_batch.non_tensor_batch.get('episode_rewards', None)
-                bs = len(merged_batch.batch['token_level_scores'])
-                traj_uids = merged_batch.non_tensor_batch.get('traj_uid', None)
-                seen_trajs = {}
-                for i in range(bs):
-                    uid = traj_uids[i] if traj_uids is not None else i
-                    if uid not in seen_trajs:
-                        is_succ = float(episode_rewards_arr[i]) > 0 if episode_rewards_arr is not None else False
-                        seen_trajs[uid] = (contrastive_context_types[i], is_succ)
-                n_top_k_trajs = sum(1 for ct, _ in seen_trajs.values() if ct == 'top_k')
-                n_top_k_success = sum(1 for ct, s in seen_trajs.values() if ct == 'top_k' and s)
-                n_no_skill_trajs = sum(1 for ct, _ in seen_trajs.values() if ct == 'no_skill')
-                n_no_skill_success = sum(1 for ct, s in seen_trajs.values() if ct == 'no_skill' and s)
-                metrics['utilize/skill_success_rate'] = n_top_k_success / n_top_k_trajs if n_top_k_trajs > 0 else 0.0
-                metrics['utilize/noskill_success_rate'] = n_no_skill_success / n_no_skill_trajs if n_no_skill_trajs > 0 else 0.0
-                metrics['utilize/n_skill'] = n_top_k_trajs
-                metrics['utilize/n_noskill'] = n_no_skill_trajs
-                metrics['utilize/n_skill_success'] = n_top_k_success
-                metrics['utilize/n_noskill_success'] = n_no_skill_success
-
-                # Per-task delta for utilize mode
-                group_uids_merged = merged_batch.non_tensor_batch.get('uid', None)
-                if group_uids_merged is not None:
-                    task_skill_rewards = defaultdict(list)
-                    task_noskill_rewards = defaultdict(list)
-                    for i, uid in enumerate(traj_uids):
-                        if uid in seen_trajs:
-                            ct, is_succ = seen_trajs[uid]
-                            g_uid = group_uids_merged[i]
-                            if ct == 'top_k':
-                                task_skill_rewards[g_uid].append(float(is_succ))
-                            elif ct == 'no_skill':
-                                task_noskill_rewards[g_uid].append(float(is_succ))
-                    task_deltas = []
-                    for g_uid in task_skill_rewards:
-                        skill_pr = np.mean(task_skill_rewards[g_uid])
-                        noskill_pr = np.mean(task_noskill_rewards[g_uid]) if g_uid in task_noskill_rewards else 0.0
-                        task_deltas.append(skill_pr - noskill_pr)
-                    if task_deltas:
-                        self._current_step_delta = float(np.mean(task_deltas))
-                        metrics['utilize/delta'] = self._current_step_delta
-
-            # token_level_rewards (no KL in reward for contrastive)
-            if self.config.algorithm.use_kl_in_reward:
-                merged_batch, kl_metrics = apply_kl_penalty(merged_batch, kl_ctrl=self.kl_ctrl_in_reward, kl_penalty=self.config.algorithm.kl_penalty)
-            else:
-                merged_batch.batch["token_level_rewards"] = merged_batch.batch["token_level_scores"]
-
-            # Compute advantage (contrastive: noskill_mean as baseline)
-            norm_adv_by_std_in_grpo = self.config.algorithm.get("norm_adv_by_std_in_grpo", True)
-            utilize_cfg = self.config.env.get('utilize', {})
-            use_decomposed = utilize_cfg.get('decomposed_contrastive', False)
-            contrastive_omega = utilize_cfg.get('omega', 1.0)
-            use_ema_delta = utilize_cfg.get('use_ema_delta', False)
-            adv2_clip = utilize_cfg.get('adv2_clip', 3.0)
-            effective_rollout_n = rollout_n * 2  # merged: skill + noskill per group
-            # Compute delta baseline value based on mode
-            if use_ema_delta:
-                if self._delta_baseline_mode == 'window' and len(self._delta_window) > 0:
-                    ema_delta_value = float(np.mean(list(self._delta_window)))
-                elif self._delta_baseline_mode == 'ema' and self._ema_delta is not None:
-                    ema_delta_value = self._ema_delta
-                else:
-                    ema_delta_value = None
-            else:
-                ema_delta_value = None
-            merged_batch = compute_advantage(
-                merged_batch,
-                adv_estimator=self.config.algorithm.adv_estimator,
-                gamma=self.config.algorithm.gamma,
-                lam=self.config.algorithm.lam,
-                num_repeat=effective_rollout_n,
-                norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
-                multi_turn=self.config.actor_rollout_ref.rollout.multi_turn.enable,
-                use_pf_ppo=self.config.algorithm.use_pf_ppo,
-                pf_ppo_reweight_method=self.config.algorithm.pf_ppo.reweight_method,
-                pf_ppo_weight_pow=self.config.algorithm.pf_ppo.weight_pow,
-                step_advantage_w=self.config.algorithm.gigpo.step_advantage_w,
-                gigpo_mode=self.config.algorithm.gigpo.mode,
-                gigpo_enable_similarity=self.config.algorithm.gigpo.enable_similarity,
-                gigpo_similarity_thresh=self.config.algorithm.gigpo.similarity_thresh,
-                contrastive_context_types=contrastive_context_types,
-                use_decomposed_contrastive=use_decomposed,
-                contrastive_omega=contrastive_omega,
-                ema_delta=ema_delta_value,
-                adv2_clip=adv2_clip,
-            )
-
-        # Update delta baseline after advantage computation (use old value for adv2, then update)
-        if hasattr(self, '_current_step_delta') and self._current_step_delta is not None:
-            utilize_cfg = self.config.env.get('utilize', {})
-            ema_delta_alpha = utilize_cfg.get('ema_delta_alpha', 0.1)
-            if self._ema_delta is None:
-                self._ema_delta = self._current_step_delta
-            else:
-                self._ema_delta = ema_delta_alpha * self._current_step_delta + (1 - ema_delta_alpha) * self._ema_delta
-            self._delta_window.append(self._current_step_delta)
-            # Log the effective baseline value
-            if self._delta_baseline_mode == 'window' and len(self._delta_window) > 0:
-                metrics['utilize/delta_baseline'] = float(np.mean(list(self._delta_window)))
-            else:
-                metrics['utilize/delta_baseline'] = self._ema_delta
-            metrics['utilize/ema_delta'] = self._ema_delta
-            self._current_step_delta = None
-
-        # ── Filter: keep only Phase 1 (top_k) samples for training ──
-        phase1_mask = np.array([ct == 'top_k' for ct in merged_batch.non_tensor_batch['context_type']])
-        phase1_idxs = np.where(phase1_mask)[0]
-        batch = merged_batch.select_idxs(phase1_idxs)
-        batch.meta_info = merged_batch.meta_info.copy()
-        batch.meta_info["global_token_num"] = torch.sum(batch.batch["attention_mask"], dim=-1).tolist()
-
-        # Pad to be divisible by n_gpus. Padding samples have advantages=0,
-        # response_mask=0, and loss_mask=0 so they contribute zero loss and zero gradient.
-        world_size = self.config.trainer.n_gpus_per_node * self.config.trainer.nnodes
-        bs_phase1 = len(batch)
-        remainder = bs_phase1 % world_size
-        if remainder != 0:
-            to_add = world_size - remainder
-            dup_indices = np.random.choice(bs_phase1, to_add, replace=(to_add > bs_phase1))
-            dup_proto = batch.select_idxs(dup_indices)
-            # Zero out loss-related fields so padding has no gradient effect
-            dup_proto.batch["advantages"] = torch.zeros_like(dup_proto.batch["advantages"])
-            dup_proto.batch["response_mask"] = torch.zeros_like(dup_proto.batch["response_mask"])
-            if "loss_mask" in dup_proto.batch:
-                dup_proto.batch["loss_mask"] = torch.zeros_like(dup_proto.batch["loss_mask"])
-            batch = DataProto.concat([batch, dup_proto])
-            batch.meta_info["global_token_num"] = torch.sum(batch.batch["attention_mask"], dim=-1).tolist()
-            print(f"[Utilize] Phase 1 padded: {bs_phase1} -> {len(batch)} (divisor={world_size})")
-
-        print(f"[Utilize] Phase 1 only for training: {len(batch.batch['input_ids'])} samples")
-
-        # ── Old log probs (Phase 1 only) ──
-        with _timer("old_log_prob", timing_raw):
-            old_log_prob = self.actor_rollout_wg.compute_log_prob(batch)
-            entropys = old_log_prob.batch["entropys"]
-            # Compute entropy metric on real samples only (exclude padding)
-            entropys_real = entropys[:bs_phase1]
-            response_masks_real = batch.batch["response_mask"][:bs_phase1]
-            loss_agg_mode = self.config.actor_rollout_ref.actor.loss_agg_mode
-            entropy_loss = agg_loss(loss_mat=entropys_real, loss_mask=response_masks_real, loss_agg_mode=loss_agg_mode)
-            metrics.update({"actor/entropy_loss_batch-grpo": entropy_loss.detach().item()})
-            old_log_prob.batch.pop("entropys")
-            batch = batch.union(old_log_prob)
-
-        # ── Reference log probs (Phase 1 only) ──
-        if self.use_reference_policy:
-            with _timer("ref", timing_raw):
-                if not self.ref_in_actor:
-                    ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch)
-                else:
-                    ref_log_prob = self.actor_rollout_wg.compute_ref_log_prob(batch)
-                batch = batch.union(ref_log_prob)
-
-        # ── Invalid action penalty metrics (Phase 1 only, exclude padding) ──
-        # NOTE: The actual penalty was already applied on merged_batch before advantage
-        # computation (so both noskill_mean and skill scores include format penalties).
-        # Here we only compute the valid_action_ratio metric on phase1 (exclude padding).
-        if self.config.actor_rollout_ref.actor.get('use_invalid_action_penalty', True):
-            valid_action_ratio = np.mean(batch.non_tensor_batch['is_action_valid'][:bs_phase1].astype(np.float32)).item()
-            metrics['episode/valid_action_ratio'] = valid_action_ratio
-
-        # ── Update actor (Phase 1 only) ──
-        if self.config.trainer.critic_warmup <= self.global_steps:
-            with _timer("update_actor", timing_raw):
-                batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
-                guide_cfg = self.config.actor_rollout_ref.actor.get("policy_loss", {}).get("guide", {})
-                if guide_cfg.get("enabled", False):
-                    rollout_data_dir_ = self.config.trainer.get("rollout_data_dir", None)
-                    if rollout_data_dir_:
-                        batch.meta_info["internalize_dump_path"] = os.path.join(rollout_data_dir_, "internalize_probs")
-                        batch.meta_info["global_step"] = self.global_steps
-                actor_output = self.actor_rollout_wg.update_actor(batch)
-            actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
-            if "actor/grad_norm" in actor_output_metrics:
-                actor_output_metrics["actor/grad_norm_batch-grpo"] = actor_output_metrics.pop("actor/grad_norm")
-            if "actor/pg_loss" in actor_output_metrics:
-                actor_output_metrics["actor/batch-grpo_loss"] = actor_output_metrics.pop("actor/pg_loss")
-            if "actor/kl_loss" in actor_output_metrics:
-                actor_output_metrics["actor/kl_loss_batch-grpo"] = actor_output_metrics.pop("actor/kl_loss")
-            metrics.update(actor_output_metrics)
-
-        return batch, reward_extra_infos_dict
-
-    @staticmethod
-    def _subset_reset_info(reset_info: dict, indices: list) -> dict:
-        """Extract a subset of reset_info by task indices.
-
-        reset_info is typically {'game_files': [...]} (AlfWorld) or similar
-        dict-of-lists.  This selects only the entries at the given indices.
-        """
-        if reset_info is None:
-            return None
-        result = {}
-        for key, value in reset_info.items():
-            if isinstance(value, (list, np.ndarray)):
-                result[key] = [value[i] for i in indices]
-            else:
-                result[key] = value
-        return result
-
-    def _internalize_step(self, gen_batch, timing_raw, metrics):
-        """Internalize-only ablation: JSD distillation for hard (cliff) tasks.
-
-        Phase 1: Plain rollout (specific skills only) for all tasks
-        Phase 2: Guided rollout (full skills) for cliff tasks only → R=1 filter → JSD
-        Non-cliff tasks get standard GRPO.
-        Each update is an independent optimizer step (no combined mode).
-        Returns the batch and reward_extra_infos_dict.
-        """
-        internalize_cfg = self.config.env.get('internalize', {})
-        jsd_lambda = internalize_cfg.get('jsd_lambda', 1.0)
-        jsd_top_k = internalize_cfg.get('jsd_top_k', 64)
-        jsd_temperature = internalize_cfg.get('jsd_temperature', 1.0)
-        rollout_n = self.config.actor_rollout_ref.rollout.n
-
-        # ── Phase 1: Plain rollout (all tasks, exclude general+common hints) ──
-        # NOTE: multi_turn_loop internally handles gen_batch.repeat(env.rollout.n)
-        # so we pass the original gen_batch (size = train_data_size).
-        with _timer("gen_plain", timing_raw):
-            self.envs.set_mode(plain=True)
-            plain_output = self.traj_collector.multi_turn_loop(
-                gen_batch=gen_batch,
-                actor_rollout_wg=self.actor_rollout_wg,
-                envs=self.envs,
-                is_train=True,
-            )
-
-        # Capture reset_info from Phase 1 so Phase 2 replays the same tasks
-        reset_info = self.envs.get_last_reset_info()
-
-        # Dump Phase 1 (plain) trajectories immediately (before balance_batch reorders)
-        rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
-        if rollout_data_dir:
-            plain_inputs = self.tokenizer.batch_decode(plain_output.batch["prompts"], skip_special_tokens=True)
-            plain_outputs_text = self.tokenizer.batch_decode(plain_output.batch["responses"], skip_special_tokens=True)
-            plain_scores = [float(x) for x in plain_output.non_tensor_batch['episode_rewards']]
-            self._dump_generations(
-                inputs=plain_inputs, outputs=plain_outputs_text, scores=plain_scores,
-                reward_extra_infos_dict={}, dump_path=rollout_data_dir,
-                traj_uids=plain_output.non_tensor_batch.get('traj_uid', None),
-                uids=plain_output.non_tensor_batch.get('uid', None),
-            )
-
-        # ── Cliff detection (task-level, grouped by uid) ──
-        # uid = group uid shared by G trajectories of the same task
-        # traj_uid = unique per trajectory (each trajectory has its own uuid)
-        # NOTE: uid values are freshly generated per multi_turn_loop call, so they
-        # cannot be compared across Phase 1 and Phase 2.  We use uid only for
-        # within-phase grouping and convert to a stable *task_index* (0-based
-        # ordinal determined by first-occurrence order of uid) for cross-phase
-        # matching.
-        episode_rewards = plain_output.non_tensor_batch['episode_rewards']
-        group_uids = plain_output.non_tensor_batch['uid']
-        traj_uids = plain_output.non_tensor_batch['traj_uid']
-
-        # Build uid → task_index mapping (stable ordinal based on first occurrence)
-        uid_to_task_idx = {}
-        for uid in group_uids:
-            if uid not in uid_to_task_idx:
-                uid_to_task_idx[uid] = len(uid_to_task_idx)
-
-        # Deduplicate: get one reward per trajectory (steps share the same value)
-        traj_reward = {}   # traj_uid -> reward
-        traj_to_task = {}  # traj_uid -> task_index
-        for g_uid, t_uid, r in zip(group_uids, traj_uids, episode_rewards):
-            traj_reward[t_uid] = float(r)
-            traj_to_task[t_uid] = uid_to_task_idx[g_uid]
-
-        # Group trajectory rewards by task_index
-        task_rewards = defaultdict(list)
-        for t_uid, r in traj_reward.items():
-            task_rewards[traj_to_task[t_uid]].append(r)
-
-        n_total_tasks = len(task_rewards)
-        cliff_task_indices = {idx for idx, rewards in task_rewards.items() if sum(rewards) == 0}
-        non_cliff_task_indices = set(task_rewards.keys()) - cliff_task_indices
-        n_cliff = len(cliff_task_indices)
-        n_non_cliff = n_total_tasks - n_cliff
-
-        metrics['routing/hard_ratio'] = n_cliff / n_total_tasks if n_total_tasks > 0 else 0.0
-        metrics['routing/medium_ratio'] = n_non_cliff / n_total_tasks if n_total_tasks > 0 else 0.0
-        metrics['routing/batch_pass_rate'] = n_non_cliff / n_total_tasks if n_total_tasks > 0 else 0.0
-
-        print(f"[Internalize] cliff={n_cliff}/{n_total_tasks} "
-              f"(hard_ratio={metrics['routing/hard_ratio']:.3f})")
-
-        # ── Separate non-cliff samples from plain rollout ──
-        step_task_indices = np.array([uid_to_task_idx[uid] for uid in group_uids])
-        non_cliff_mask = np.array([idx in non_cliff_task_indices for idx in step_task_indices])
-        non_cliff_idxs = np.where(non_cliff_mask)[0]
-
-        # ── Phase 2: Guided rollout for cliff tasks ──
-        guided_r1_batch = None
-        if n_cliff > 0:
-            with _timer("gen_guided", timing_raw):
-                self.envs.set_mode(plain=False)  # guided: full skills + guide_internalize
-                guided_output = self.traj_collector.multi_turn_loop(
-                    gen_batch=gen_batch,
-                    actor_rollout_wg=self.actor_rollout_wg,
-                    envs=self.envs,
-                    is_train=True,
-                    reset_info=reset_info,
-                )
-
-            # Dump Phase 2 (guided) trajectories
-            if rollout_data_dir:
-                guided_dump_path = os.path.join(rollout_data_dir, "guided")
-                guided_inputs = self.tokenizer.batch_decode(guided_output.batch["prompts"], skip_special_tokens=True)
-                guided_outputs_text = self.tokenizer.batch_decode(guided_output.batch["responses"], skip_special_tokens=True)
-                guided_scores = [float(x) for x in guided_output.non_tensor_batch['episode_rewards']]
-                self._dump_generations(
-                    inputs=guided_inputs, outputs=guided_outputs_text, scores=guided_scores,
-                    reward_extra_infos_dict={}, dump_path=guided_dump_path,
-                    traj_uids=guided_output.non_tensor_batch.get('traj_uid', None),
-                    uids=guided_output.non_tensor_batch.get('uid', None),
-                )
-
-            # R=1 filter: only keep successful guided trajectories for cliff tasks
-            guided_rewards = guided_output.non_tensor_batch['episode_rewards']
-            guided_group_uids = guided_output.non_tensor_batch['uid']
-            guided_traj_uids = guided_output.non_tensor_batch['traj_uid']
-
-            # Build uid → task_index mapping for guided output (same ordinal convention)
-            guided_uid_to_task_idx = {}
-            for uid in guided_group_uids:
-                if uid not in guided_uid_to_task_idx:
-                    guided_uid_to_task_idx[uid] = len(guided_uid_to_task_idx)
-
-            # Deduplicate: one reward per trajectory
-            guided_traj_reward = {}
-            guided_traj_to_task = {}
-            for g_uid, t_uid, r in zip(guided_group_uids, guided_traj_uids, guided_rewards):
-                guided_traj_reward[t_uid] = float(r)
-                guided_traj_to_task[t_uid] = guided_uid_to_task_idx[g_uid]
-
-            # Per-step task index for guided output
-            guided_step_task = np.array([guided_uid_to_task_idx[uid] for uid in guided_group_uids])
-
-            # R=1 mask: step belongs to a cliff task AND its trajectory reward > 0
-            guided_r1_mask = np.array([
-                (guided_traj_to_task.get(t_uid, -1) in cliff_task_indices) and (float(r) > 0)
-                for t_uid, r in zip(guided_traj_uids, guided_rewards)
-            ])
-            guided_r1_idxs = np.where(guided_r1_mask)[0]
-
-            # Count trajectory-level stats (deduplicated by traj_uid)
-            n_guided_total = sum(1 for t_uid in guided_traj_reward
-                                 if guided_traj_to_task[t_uid] in cliff_task_indices)
-            n_guided_pass = sum(1 for t_uid, r in guided_traj_reward.items()
-                                if guided_traj_to_task[t_uid] in cliff_task_indices and r > 0)
-
-            # Count no-signal tasks (cliff + all guided trajectories fail)
-            guided_task_rewards = defaultdict(list)
-            for t_uid, r in guided_traj_reward.items():
-                tidx = guided_traj_to_task[t_uid]
-                if tidx in cliff_task_indices:
-                    guided_task_rewards[tidx].append(r)
-            n_no_signal = sum(1 for tidx in cliff_task_indices
-                              if sum(guided_task_rewards.get(tidx, [0])) == 0)
-
-            # Phase 2 full rollout stats
-            n_guided_rollout_total = len(guided_traj_reward)  # all trajectories in Phase 2
-            n_guided_rollout_steps = len(guided_output.batch['input_ids'])  # all steps in Phase 2
-            n_guided_r1_steps = int(guided_r1_mask.sum())  # steps actually used for JSD
-
-            metrics['internalize/guided_rollout_total_traj'] = n_guided_rollout_total
-            metrics['internalize/guided_rollout_total_steps'] = n_guided_rollout_steps
-            metrics['internalize/guided_cliff_traj_count'] = n_guided_total
-            metrics['internalize/guided_pass_rate'] = n_guided_pass / n_guided_total if n_guided_total > 0 else 0.0
-            metrics['internalize/guided_pass_count'] = n_guided_pass
-            metrics['internalize/jsd_token_count'] = n_guided_r1_steps
-            metrics['internalize/no_signal_count'] = n_no_signal
-            metrics['internalize/guided_utilization'] = n_guided_r1_steps / n_guided_rollout_steps if n_guided_rollout_steps > 0 else 0.0
-
-            print(f"[Internalize] Phase 2: total_traj={n_guided_rollout_total}, "
-                  f"cliff_traj={n_guided_total}, R=1={n_guided_pass} "
-                  f"(pass_rate={metrics['internalize/guided_pass_rate']:.3f}), "
-                  f"jsd_token_count={n_guided_r1_steps}/{n_guided_rollout_steps} "
-                  f"(utilization={metrics['internalize/guided_utilization']:.3f}), "
-                  f"no_signal={n_no_signal}")
-
-            if n_guided_pass > 0:
-                guided_r1_batch = guided_output.select_idxs(guided_r1_idxs)
-        else:
-            metrics['internalize/guided_rollout_total_traj'] = 0
-            metrics['internalize/guided_rollout_total_steps'] = 0
-            metrics['internalize/guided_cliff_traj_count'] = 0
-            metrics['internalize/guided_pass_rate'] = 0.0
-            metrics['internalize/guided_pass_count'] = 0
-            metrics['internalize/jsd_token_count'] = 0
-            metrics['internalize/no_signal_count'] = 0
-            metrics['internalize/guided_utilization'] = 0.0
-
-        # Restore env mode
-        print("[Internalize] Restoring env mode...")
-        self.envs.restore_mode()
-        print("[Internalize] Env mode restored.")
-
-        # ── Process non-cliff batch: standard GRPO pipeline ──
-        batch = None
-        reward_extra_infos_dict = {}
-
-        if len(non_cliff_idxs) > 0:
-            print(f"[Internalize] Processing non-cliff batch: {len(non_cliff_idxs)} samples")
-            non_cliff_batch = plain_output.select_idxs(non_cliff_idxs)
-            bs_real = len(non_cliff_batch)  # Track real sample count before padding
-            non_cliff_batch = adjust_batch(self.config, non_cliff_batch)
-            # Mark padding samples (adjust_batch appends copies at the end)
-            is_padding = np.zeros(len(non_cliff_batch), dtype=bool)
-            is_padding[bs_real:] = True
-            non_cliff_batch.non_tensor_batch['_is_padding'] = is_padding
-            non_cliff_batch.batch["response_mask"] = compute_response_mask(non_cliff_batch)
-
-            # Zero out padding masks immediately so they never contribute to
-            # entropy/kl gradients or metrics (dp_actor uses loss_mask in multi_turn)
-            n_padding_early = int(is_padding.sum())
-            if n_padding_early > 0:
-                padding_indices_early = torch.tensor(np.where(is_padding)[0], dtype=torch.long)
-                non_cliff_batch.batch["response_mask"][padding_indices_early] = 0.0
-                if "loss_mask" in non_cliff_batch.batch:
-                    non_cliff_batch.batch["loss_mask"][padding_indices_early] = 0.0
-
-            if self.config.trainer.balance_batch:
-                self._balance_batch(non_cliff_batch, metrics=metrics)
-
-            non_cliff_batch.meta_info["global_token_num"] = torch.sum(
-                non_cliff_batch.batch["attention_mask"], dim=-1).tolist()
-
-            # Reward
-            with _timer("reward", timing_raw):
-                reward_tensor, reward_extra_infos_dict = compute_reward(non_cliff_batch, self.reward_fn)
-            non_cliff_batch.batch["token_level_scores"] = reward_tensor
-
-            if reward_extra_infos_dict:
-                non_cliff_batch.non_tensor_batch.update(
-                    {k: np.array(v) for k, v in reward_extra_infos_dict.items()})
-
-            # Apply penalties (compute on full batch including padding for alignment,
-            # but only report metrics from real samples)
-            padding_mask = non_cliff_batch.non_tensor_batch['_is_padding']
-            if self.config.actor_rollout_ref.actor.get('use_invalid_action_penalty', True):
-                non_cliff_batch, invalid_metrics = apply_invalid_action_penalty(
-                    non_cliff_batch,
-                    invalid_action_penalty_coef=self.config.actor_rollout_ref.actor.invalid_action_penalty_coef)
-                # Recompute valid_action_ratio on real samples only
-                if 'valid_actions' in non_cliff_batch.non_tensor_batch:
-                    real_valid = non_cliff_batch.non_tensor_batch['valid_actions'][~padding_mask]
-                    invalid_metrics['episode/valid_action_ratio'] = float(np.mean(real_valid))
-                metrics.update(invalid_metrics)
-
-            if self.config.algorithm.use_kl_in_reward:
-                non_cliff_batch, kl_metrics = apply_kl_penalty(
-                    non_cliff_batch, kl_ctrl=self.kl_ctrl_in_reward,
-                    kl_penalty=self.config.algorithm.kl_penalty)
-                metrics.update(kl_metrics)
-            else:
-                non_cliff_batch.batch["token_level_rewards"] = non_cliff_batch.batch["token_level_scores"]
-
-            # Old log probs (on-policy)
-            n_padding = int(padding_mask.sum())
-            print(f"[Internalize] Computing old_log_prob for non-cliff batch ({len(non_cliff_batch.batch['input_ids'])} samples, "
-                  f"{bs_real} real + {n_padding} padding)...")
-            with _timer("old_log_prob", timing_raw):
-                old_log_prob = self.actor_rollout_wg.compute_log_prob(non_cliff_batch)
-                entropys = old_log_prob.batch["entropys"]
-                # Only compute entropy metric on real samples
-                real_mask_bool = ~padding_mask
-                real_indices = torch.tensor(np.where(real_mask_bool)[0], dtype=torch.long)
-                entropys_real = entropys[real_indices]
-                response_masks_real = non_cliff_batch.batch["response_mask"][real_indices]
-                loss_agg_mode = self.config.actor_rollout_ref.actor.loss_agg_mode
-                entropy_loss = agg_loss(loss_mat=entropys_real, loss_mask=response_masks_real,
-                                        loss_agg_mode=loss_agg_mode)
-                metrics["actor/entropy_loss_grpo"] = entropy_loss.detach().item()
-                old_log_prob.batch.pop("entropys")
-                non_cliff_batch = non_cliff_batch.union(old_log_prob)
-
-            # Reference log probs
-            print("[Internalize] old_log_prob done. Computing ref_log_prob...")
-            if self.use_reference_policy:
-                with _timer("ref", timing_raw):
-                    if not self.ref_in_actor:
-                        ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(non_cliff_batch)
-                    else:
-                        ref_log_prob = self.actor_rollout_wg.compute_ref_log_prob(non_cliff_batch)
-                    non_cliff_batch = non_cliff_batch.union(ref_log_prob)
-
-            # Advantages
-            print("[Internalize] ref done. Computing advantages...")
-            with _timer("adv", timing_raw):
-                norm_adv_by_std_in_grpo = self.config.algorithm.get("norm_adv_by_std_in_grpo", True)
-                non_cliff_batch = compute_advantage(
-                    non_cliff_batch,
-                    adv_estimator=self.config.algorithm.adv_estimator,
-                    gamma=self.config.algorithm.gamma,
-                    lam=self.config.algorithm.lam,
-                    num_repeat=rollout_n,
-                    norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
-                    multi_turn=self.config.actor_rollout_ref.rollout.multi_turn.enable,
-                    use_pf_ppo=self.config.algorithm.use_pf_ppo,
-                    pf_ppo_reweight_method=self.config.algorithm.pf_ppo.reweight_method,
-                    pf_ppo_weight_pow=self.config.algorithm.pf_ppo.weight_pow,
-                    step_advantage_w=self.config.algorithm.gigpo.step_advantage_w,
-                    gigpo_mode=self.config.algorithm.gigpo.mode,
-                    gigpo_enable_similarity=self.config.algorithm.gigpo.enable_similarity,
-                    gigpo_similarity_thresh=self.config.algorithm.gigpo.similarity_thresh,
-                )
-
-            # Zero out padding advantages (response_mask/loss_mask already zeroed above)
-            if n_padding > 0:
-                padding_indices = torch.tensor(np.where(padding_mask)[0], dtype=torch.long)
-                non_cliff_batch.batch["advantages"][padding_indices] = 0.0
-                print(f"[Internalize] Zeroed out {n_padding} padding samples' advantages")
-
-            # Mark as non-JSD samples
-            non_cliff_batch.non_tensor_batch['is_jsd_sample'] = np.zeros(
-                len(non_cliff_batch.batch['input_ids']), dtype=bool)
-
-            batch = non_cliff_batch
-
-        print(f"[Internalize] Non-cliff processing done. batch={'set' if batch is not None else 'None'}")
-
-        # ── Prepare cliff R=1 batch for JSD ──
-        # JSD batch only needs actor forward (no rollout/ref), so minimal padding:
-        # just ensure divisible by (n_gpu * actor_micro_batch_size_per_gpu)
-        jsd_batch = None
-        if guided_r1_batch is not None and len(guided_r1_batch.batch['input_ids']) > 0:
-            jsd_batch = guided_r1_batch
-            world_size = self.config.trainer.n_gpus_per_node * self.config.trainer.nnodes
-            jsd_divisor = self.config.actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu * world_size
-            bs_jsd_real = len(jsd_batch)
-            remainder = bs_jsd_real % jsd_divisor
-            if remainder != 0:
-                to_add = jsd_divisor - remainder
-                dup_indices = np.random.choice(bs_jsd_real, to_add, replace=(to_add > bs_jsd_real))
-                dup_proto = jsd_batch.select_idxs(dup_indices)
-                jsd_batch = DataProto.concat([jsd_batch, dup_proto])
-            jsd_batch.batch["response_mask"] = compute_response_mask(jsd_batch)
-            # Zero out masks for padding samples so they don't contribute to JSD loss.
-            # Multi-turn JSD uses loss_mask[:, -response_length:] as response_mask.
-            # We zero loss_mask for padding; attention_mask is kept intact for valid forward pass.
-            if len(jsd_batch) > bs_jsd_real:
-                jsd_batch.batch["response_mask"][bs_jsd_real:] = 0.0
-                if "loss_mask" in jsd_batch.batch:
-                    jsd_batch.batch["loss_mask"][bs_jsd_real:] = 0.0
-            print(f"[Internalize] JSD batch: {bs_jsd_real} real samples -> {len(jsd_batch)} after padding (divisor={jsd_divisor})")
-
-        # ── Fallback: if no GRPO data (all cliff), use plain as-is for GRPO ──
-        if batch is None:
-            print("[Internalize] WARNING: No non-cliff samples. Using plain rollout as-is for GRPO.")
-            batch = plain_output
-            bs_fallback_real = len(batch)
-            batch = adjust_batch(self.config, batch)
-            # Mark padding samples
-            is_padding_fb = np.zeros(len(batch), dtype=bool)
-            is_padding_fb[bs_fallback_real:] = True
-            batch.non_tensor_batch['_is_padding'] = is_padding_fb
-            batch.batch["response_mask"] = compute_response_mask(batch)
-            # Zero out padding masks immediately
-            if is_padding_fb.any():
-                padding_indices_fb_early = torch.tensor(np.where(is_padding_fb)[0], dtype=torch.long)
-                batch.batch["response_mask"][padding_indices_fb_early] = 0.0
-                if "loss_mask" in batch.batch:
-                    batch.batch["loss_mask"][padding_indices_fb_early] = 0.0
-            if self.config.trainer.balance_batch:
-                self._balance_batch(batch, metrics=metrics)
-            batch.meta_info["global_token_num"] = torch.sum(
-                batch.batch["attention_mask"], dim=-1).tolist()
-            with _timer("reward", timing_raw):
-                reward_tensor, reward_extra_infos_dict = compute_reward(batch, self.reward_fn)
-            batch.batch["token_level_scores"] = reward_tensor
-            if reward_extra_infos_dict:
-                batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
-            batch.batch["token_level_rewards"] = batch.batch["token_level_scores"]
-            with _timer("old_log_prob", timing_raw):
-                old_log_prob = self.actor_rollout_wg.compute_log_prob(batch)
-                old_log_prob.batch.pop("entropys")
-                batch = batch.union(old_log_prob)
-            if self.use_reference_policy:
-                with _timer("ref", timing_raw):
-                    if not self.ref_in_actor:
-                        ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch)
-                    else:
-                        ref_log_prob = self.actor_rollout_wg.compute_ref_log_prob(batch)
-                    batch = batch.union(ref_log_prob)
-            norm_adv_by_std_in_grpo = self.config.algorithm.get("norm_adv_by_std_in_grpo", True)
-            batch = compute_advantage(
-                batch,
-                adv_estimator=self.config.algorithm.adv_estimator,
-                gamma=self.config.algorithm.gamma,
-                lam=self.config.algorithm.lam,
-                num_repeat=rollout_n,
-                norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
-                multi_turn=self.config.actor_rollout_ref.rollout.multi_turn.enable,
-                use_pf_ppo=self.config.algorithm.use_pf_ppo,
-                pf_ppo_reweight_method=self.config.algorithm.pf_ppo.reweight_method,
-                pf_ppo_weight_pow=self.config.algorithm.pf_ppo.weight_pow,
-                step_advantage_w=self.config.algorithm.gigpo.step_advantage_w,
-                gigpo_mode=self.config.algorithm.gigpo.mode,
-                gigpo_enable_similarity=self.config.algorithm.gigpo.enable_similarity,
-                gigpo_similarity_thresh=self.config.algorithm.gigpo.similarity_thresh,
-            )
-            # Zero out padding advantages (response_mask/loss_mask already zeroed above)
-            padding_mask_fb = batch.non_tensor_batch['_is_padding']
-            if padding_mask_fb.any():
-                padding_indices_fb = torch.tensor(np.where(padding_mask_fb)[0], dtype=torch.long)
-                batch.batch["advantages"][padding_indices_fb] = 0.0
-
-        # ── Update actor: independent GRPO step + independent JSD step ──
-        if self.config.trainer.critic_warmup <= self.global_steps:
-            # Step 1: GRPO update on non-cliff (or fallback) batch
-            print(f"[Internalize] GRPO update_actor: {len(batch.batch['input_ids'])} samples")
-            with _timer("update_actor", timing_raw):
-                batch.meta_info["temperature"] = self.config.actor_rollout_ref.rollout.temperature
-                batch.meta_info["global_token_num"] = torch.sum(
-                    batch.batch["attention_mask"], dim=-1).tolist()
-                batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
-                batch.meta_info["hdpo_mode"] = "grpo"
-                actor_output = self.actor_rollout_wg.update_actor(batch)
-            actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
-            if "actor/grad_norm" in actor_output_metrics:
-                actor_output_metrics["actor/grad_norm_grpo"] = actor_output_metrics.pop("actor/grad_norm")
-            if "actor/pg_loss" in actor_output_metrics:
-                actor_output_metrics["actor/grpo_loss"] = actor_output_metrics.pop("actor/pg_loss")
-            if "actor/kl_loss" in actor_output_metrics:
-                actor_output_metrics["actor/kl_loss_grpo"] = actor_output_metrics.pop("actor/kl_loss")
-            metrics.update(actor_output_metrics)
-
-            # Step 2: JSD update on cliff R=1 batch (independent step)
-            if jsd_batch is not None:
-                print(f"[Internalize] JSD update_actor: {len(jsd_batch.batch['input_ids'])} samples")
-                with _timer("update_actor_jsd", timing_raw):
-                    jsd_batch.meta_info["temperature"] = self.config.actor_rollout_ref.rollout.temperature
-                    jsd_batch.meta_info["global_token_num"] = torch.sum(
-                        jsd_batch.batch["attention_mask"], dim=-1).tolist()
-                    jsd_batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
-                    jsd_batch.meta_info["hdpo_mode"] = "jsd"
-                    jsd_batch.meta_info["hdpo_config"] = {
-                        'jsd_lambda': jsd_lambda,
-                        'jsd_top_k': jsd_top_k,
-                        'jsd_temperature': jsd_temperature,
-                    }
-                    jsd_output = self.actor_rollout_wg.update_actor(jsd_batch)
-                jsd_output_metrics = reduce_metrics(jsd_output.meta_info["metrics"])
-                if "actor/grad_norm" in jsd_output_metrics:
-                    jsd_output_metrics["actor/grad_norm_jsd"] = jsd_output_metrics.pop("actor/grad_norm")
-                metrics.update(jsd_output_metrics)
-
-        return batch, reward_extra_infos_dict
-
-    def _dual_distill_step(self, gen_batch, timing_raw, metrics):
-        """Unified GRPO + Dual Adaptive Distillation.
-
-        Phase 1: Plain rollout (specific skills only) → 128 samples, full GRPO
-        Phase 2: Adaptive choice of guided OR noskill rollout → conditional JSD distillation
-
-        Internalize branch: guided success → JSD distill to plain prompt
-        Robustness branch: noskill success → JSD distill to skill prompt
-        """
-        dual_cfg = self.config.env.get('dual_distill', {})
-        phase2_mode = dual_cfg.get('phase2_mode', 'adaptive')  # full / alternate / adaptive
-        window_size = dual_cfg.get('window_size', 5)
-        jsd_lambda_intern = dual_cfg.get('jsd_lambda_intern', 1.0)
-        jsd_lambda_robust = dual_cfg.get('jsd_lambda_robust', 1.0)
-        # When both branches fire in the same step, halve lambda to keep total JSD gradient stable
-        # This applies to full mode (always both) and adaptive bootstrap (both during window fill)
-        both_branches_this_step = (phase2_mode == 'full') or (
-            phase2_mode == 'adaptive' and self.global_steps <= window_size)
-        if both_branches_this_step:
-            jsd_lambda_intern = jsd_lambda_intern * 0.5
-            jsd_lambda_robust = jsd_lambda_robust * 0.5
-        jsd_top_k = dual_cfg.get('jsd_top_k', 64)
-        jsd_temperature = dual_cfg.get('jsd_temperature', 1.0)
-        rollout_n = self.config.actor_rollout_ref.rollout.n
-        env_rollout_n = self.config.env.rollout.n  # env workers per task (used for task_modes expansion)
-
-        # ══════════════════════════════════════════════════════════════
-        # Phase 1: Plain rollout (specific skills only)
-        # ══════════════════════════════════════════════════════════════
-        with _timer("gen_plain", timing_raw):
-            self.envs.set_mode(plain=True)
-            plain_output = self.traj_collector.multi_turn_loop(
-                gen_batch=gen_batch,
-                actor_rollout_wg=self.actor_rollout_wg,
-                envs=self.envs,
-                is_train=True,
-            )
-
-        # Capture reset_info for replaying same tasks in Phase 2
-        reset_info = self.envs.get_last_reset_info()
-
-        # Dump plain trajectories immediately (before balance_batch reorders)
-        rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
-        if rollout_data_dir:
-            plain_inputs = self.tokenizer.batch_decode(plain_output.batch["prompts"], skip_special_tokens=True)
-            plain_outputs_text = self.tokenizer.batch_decode(plain_output.batch["responses"], skip_special_tokens=True)
-            plain_scores = plain_output.non_tensor_batch['episode_rewards']
-            plain_scores = [float(x) for x in plain_scores]
-            self._dump_generations(
-                inputs=plain_inputs, outputs=plain_outputs_text, scores=plain_scores,
-                reward_extra_infos_dict={}, dump_path=rollout_data_dir,
-                traj_uids=plain_output.non_tensor_batch.get('traj_uid', None),
-                uids=plain_output.non_tensor_batch.get('uid', None),
-            )
-
-        # ══════════════════════════════════════════════════════════════
-        # Task-level pass rate computation (Phase 1)
-        # ══════════════════════════════════════════════════════════════
-        episode_rewards = plain_output.non_tensor_batch['episode_rewards']
-        group_uids = plain_output.non_tensor_batch['uid']
-        traj_uids = plain_output.non_tensor_batch['traj_uid']
-
-        uid_to_task_idx = {}
-        for uid in group_uids:
-            if uid not in uid_to_task_idx:
-                uid_to_task_idx[uid] = len(uid_to_task_idx)
-
-        traj_reward = {}
-        traj_to_task = {}
-        for g_uid, t_uid, r in zip(group_uids, traj_uids, episode_rewards):
-            traj_reward[t_uid] = float(r)
-            traj_to_task[t_uid] = uid_to_task_idx[g_uid]
-
-        task_rewards = defaultdict(list)
-        for t_uid, r in traj_reward.items():
-            task_rewards[traj_to_task[t_uid]].append(r)
-
-        n_total_tasks = len(task_rewards)
-        task_pass_rates = {}
-        for tidx, rewards in task_rewards.items():
-            task_pass_rates[tidx] = sum(1 for r in rewards if r > 0) / len(rewards)
-
-        plain_batch_pr = np.mean(list(task_pass_rates.values())) if task_pass_rates else 0.0
-
-        # Extract unique uids for Phase 2 replay
-        seen = set()
-        uid_base = []
-        for uid in group_uids:
-            if uid not in seen:
-                seen.add(uid)
-                uid_base.append(uid)
-        uid_base = np.array(uid_base, dtype=object)
-
-        # Phase 1 episode metrics
-        unique_traj_uids_p1, unique_idx_p1 = np.unique(plain_output.non_tensor_batch['traj_uid'], return_index=True)
-        episode_rewards_p1 = plain_output.non_tensor_batch['episode_rewards'][unique_idx_p1]
-        episode_lengths_p1 = plain_output.non_tensor_batch['episode_lengths'][unique_idx_p1]
-        metrics['episode/reward/mean'] = float(episode_rewards_p1.mean())
-        metrics['episode/reward/max'] = float(episode_rewards_p1.max())
-        metrics['episode/reward/min'] = float(episode_rewards_p1.min())
-        metrics['episode/length/mean'] = float(episode_lengths_p1.mean())
-        metrics['episode/length/max'] = float(episode_lengths_p1.max())
-        metrics['episode/length/min'] = float(episode_lengths_p1.min())
-        for k, v in plain_output.non_tensor_batch.items():
-            if "success_rate" in k:
-                metrics[f'episode/{k}'] = float(v[0])
-
-        # ══════════════════════════════════════════════════════════════
-        # Phase 2: Adaptive scheduling — decide guided vs noskill
-        # ══════════════════════════════════════════════════════════════
-        run_guided = False
-        run_noskill = False
-
-        if phase2_mode == 'full':
-            run_guided = True
-            run_noskill = True
-        elif phase2_mode == 'alternate':
-            if self.global_steps % 2 == 1:
-                run_guided = True
-            else:
-                run_noskill = True
-        elif phase2_mode == 'adaptive':
-            # Bootstrap: first window_size steps run both (fill windows)
-            if self.global_steps <= window_size:
-                run_guided = True
-                run_noskill = True
-            else:
-                import random
-                epsilon = dual_cfg.get('epsilon', 0.3)
-                intern_mean = np.mean(self._dual_intern_window) if len(self._dual_intern_window) > 0 else 0.0
-                robust_mean = np.mean(self._dual_robust_window) if len(self._dual_robust_window) > 0 else 0.0
-                if random.random() < epsilon:
-                    # Epsilon-greedy: explore the minority branch
-                    if intern_mean > robust_mean:
-                        run_noskill = True  # explore: pick the non-greedy branch
-                    elif robust_mean > intern_mean:
-                        run_guided = True
-                    else:
-                        if random.random() < 0.5:
-                            run_guided = True
-                        else:
-                            run_noskill = True
-                    metrics['dual/epsilon_explored'] = 1.0
-                else:
-                    # Greedy: pick the branch with higher mean delta
-                    if intern_mean > robust_mean:
-                        run_guided = True
-                    elif robust_mean > intern_mean:
-                        run_noskill = True
-                    else:
-                        if random.random() < 0.5:
-                            run_guided = True
-                        else:
-                            run_noskill = True
-                    metrics['dual/epsilon_explored'] = 0.0
-                metrics['dual/intern_window_mean'] = float(intern_mean)
-                metrics['dual/robust_window_mean'] = float(robust_mean)
-
-        metrics['dual/phase2_choice'] = 0.0 if (run_guided and not run_noskill) else (1.0 if (run_noskill and not run_guided) else 0.5)
-
-        print(f"[Dual] Step {self.global_steps}: phase2_mode={phase2_mode}, "
-            f"run_guided={run_guided}, run_noskill={run_noskill}, plain_pr={plain_batch_pr:.4f}")
-
-        # ══════════════════════════════════════════════════════════════
-        # Phase 2a: Guided rollout (internalize branch)
-        # ══════════════════════════════════════════════════════════════
-        guided_output = None
-        guided_task_pass_rates = {}
-
-        if run_guided:
-            with _timer("gen_guided", timing_raw):
-                self.envs.set_mode(plain=False)  # guide_internalize mode
-                guided_output = self.traj_collector.multi_turn_loop(
-                    gen_batch=gen_batch,
-                    actor_rollout_wg=self.actor_rollout_wg,
-                    envs=self.envs,
-                    is_train=True,
-                    reset_info=reset_info,
-                    uid_base=uid_base,
-                )
-
-            # Debug: verify guided prompt content
-            _g_prompts = self.tokenizer.batch_decode(guided_output.batch["prompts"][:4], skip_special_tokens=True)
-            for _gi, _gp in enumerate(_g_prompts):
-                _has_general = "General Principles" in _gp
-                _has_task = "Task-Relevant Skills" in _gp
-                _has_retrieved = "Retrieved Relevant Experience" in _gp
-                print(f"[Dual DEBUG] Guided sample {_gi}: len={len(_gp)}, has_general={_has_general}, has_task={_has_task}, has_retrieved={_has_retrieved}")
-
-            # Compute guided per-task pass rates
-            g_group_uids = guided_output.non_tensor_batch['uid']
-            g_traj_uids = guided_output.non_tensor_batch['traj_uid']
-            g_rewards = guided_output.non_tensor_batch['episode_rewards']
-
-            g_uid_to_task_idx = {}
-            for uid in g_group_uids:
-                if uid not in g_uid_to_task_idx:
-                    g_uid_to_task_idx[uid] = len(g_uid_to_task_idx)
-
-            g_traj_reward = {}
-            g_traj_to_task = {}
-            for g_uid, t_uid, r in zip(g_group_uids, g_traj_uids, g_rewards):
-                g_traj_reward[t_uid] = float(r)
-                g_traj_to_task[t_uid] = g_uid_to_task_idx[g_uid]
-
-            g_task_rewards = defaultdict(list)
-            for t_uid, r in g_traj_reward.items():
-                g_task_rewards[g_traj_to_task[t_uid]].append(r)
-
-            for tidx, rewards in g_task_rewards.items():
-                guided_task_pass_rates[tidx] = sum(1 for r in rewards if r > 0) / len(rewards)
-
-            # Dump guided trajectories
-            rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
-            if rollout_data_dir:
-                guided_dump_path = os.path.join(rollout_data_dir, "guided")
-                guided_inputs = self.tokenizer.batch_decode(guided_output.batch["prompts"], skip_special_tokens=True)
-                guided_outputs_text = self.tokenizer.batch_decode(guided_output.batch["responses"], skip_special_tokens=True)
-                guided_scores = guided_output.batch["token_level_scores"].sum(-1).cpu().tolist() if "token_level_scores" in guided_output.batch else [float(x) for x in g_rewards]
-                self._dump_generations(
-                    inputs=guided_inputs,
-                    outputs=guided_outputs_text,
-                    scores=guided_scores,
-                    reward_extra_infos_dict={},
-                    dump_path=guided_dump_path,
-                    traj_uids=g_traj_uids,
-                    uids=g_group_uids,
-                )
-
-        # ══════════════════════════════════════════════════════════════
-        # Phase 2b: Noskill rollout (robustness branch)
-        # ══════════════════════════════════════════════════════════════
-        noskill_output = None
-        noskill_task_pass_rates = {}
-
-        if run_noskill:
-            with _timer("gen_noskill", timing_raw):
-                # All tasks in noskill mode
-                task_modes = ['noskill'] * (n_total_tasks * env_rollout_n)
-                self.envs.set_mode(plain=False)
-                self.envs.set_per_task_mode(task_modes)
-                noskill_output = self.traj_collector.multi_turn_loop(
-                    gen_batch=gen_batch,
-                    actor_rollout_wg=self.actor_rollout_wg,
-                    envs=self.envs,
-                    is_train=True,
-                    reset_info=reset_info,
-                    uid_base=uid_base,
-                )
-                self.envs.clear_per_task_mode()
-
-            # Debug: verify noskill prompt content
-            _n_prompts = self.tokenizer.batch_decode(noskill_output.batch["prompts"][:4], skip_special_tokens=True)
-            for _ni, _np in enumerate(_n_prompts):
-                _has_general = "General Principles" in _np
-                _has_task = "Task-Relevant Skills" in _np
-                _has_retrieved = "Retrieved Relevant Experience" in _np
-                print(f"[Dual DEBUG] Noskill sample {_ni}: len={len(_np)}, has_general={_has_general}, has_task={_has_task}, has_retrieved={_has_retrieved}")
-            # Also check samples 16-19 (second task group)
-            if len(noskill_output.batch["prompts"]) > 19:
-                _n_prompts2 = self.tokenizer.batch_decode(noskill_output.batch["prompts"][16:20], skip_special_tokens=True)
-                for _ni, _np in enumerate(_n_prompts2):
-                    _has_general = "General Principles" in _np
-                    _has_task = "Task-Relevant Skills" in _np
-                    print(f"[Dual DEBUG] Noskill sample {_ni+16}: len={len(_np)}, has_general={_has_general}, has_task={_has_task}")
-
-            # Compute noskill per-task pass rates
-            ns_group_uids = noskill_output.non_tensor_batch['uid']
-            ns_traj_uids = noskill_output.non_tensor_batch['traj_uid']
-            ns_rewards = noskill_output.non_tensor_batch['episode_rewards']
-
-            ns_uid_to_task_idx = {}
-            for uid in ns_group_uids:
-                if uid not in ns_uid_to_task_idx:
-                    ns_uid_to_task_idx[uid] = len(ns_uid_to_task_idx)
-
-            ns_traj_reward = {}
-            ns_traj_to_task = {}
-            for g_uid, t_uid, r in zip(ns_group_uids, ns_traj_uids, ns_rewards):
-                ns_traj_reward[t_uid] = float(r)
-                ns_traj_to_task[t_uid] = ns_uid_to_task_idx[g_uid]
-
-            ns_task_rewards = defaultdict(list)
-            for t_uid, r in ns_traj_reward.items():
-                ns_task_rewards[ns_traj_to_task[t_uid]].append(r)
-
-            for tidx, rewards in ns_task_rewards.items():
-                noskill_task_pass_rates[tidx] = sum(1 for r in rewards if r > 0) / len(rewards)
-
-            # Dump noskill trajectories
-            rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
-            if rollout_data_dir:
-                noskill_dump_path = os.path.join(rollout_data_dir, "noskill")
-                noskill_inputs = self.tokenizer.batch_decode(noskill_output.batch["prompts"], skip_special_tokens=True)
-                noskill_outputs_text = self.tokenizer.batch_decode(noskill_output.batch["responses"], skip_special_tokens=True)
-                noskill_scores = noskill_output.batch["token_level_scores"].sum(-1).cpu().tolist() if "token_level_scores" in noskill_output.batch else [float(x) for x in ns_rewards]
-                self._dump_generations(
-                    inputs=noskill_inputs,
-                    outputs=noskill_outputs_text,
-                    scores=noskill_scores,
-                    reward_extra_infos_dict={},
-                    dump_path=noskill_dump_path,
-                    traj_uids=ns_traj_uids,
-                    uids=ns_group_uids,
-                )
-
-        # Restore env mode
-        self.envs.restore_mode()
-
-        # ══════════════════════════════════════════════════════════════
-        # Update sliding windows (delta for adaptive scheduling)
-        # ══════════════════════════════════════════════════════════════
-        if run_guided and guided_task_pass_rates:
-            guided_mean_pr = np.mean(list(guided_task_pass_rates.values()))
-            intern_delta = float(guided_mean_pr - plain_batch_pr)
-            self._dual_intern_window.append(intern_delta)
-            self._dual_intern_count += 1
-            metrics['dual/intern_delta'] = intern_delta
-            metrics['dual/guided_success_rate'] = float(guided_mean_pr)
-            metrics['dual/intern_cumulative_count'] = self._dual_intern_count
-
-        if run_noskill and noskill_task_pass_rates:
-            noskill_mean_pr = np.mean(list(noskill_task_pass_rates.values()))
-            robust_delta = float(noskill_mean_pr - plain_batch_pr)
-            self._dual_robust_window.append(robust_delta)
-            self._dual_robust_count += 1
-            metrics['dual/robust_delta'] = robust_delta
-            metrics['dual/noskill_success_rate'] = float(noskill_mean_pr)
-            metrics['dual/robust_cumulative_count'] = self._dual_robust_count
-
-        # ══════════════════════════════════════════════════════════════
-        # Update 1: Full GRPO on all Phase 1 samples (128)
-        # ══════════════════════════════════════════════════════════════
-        batch = plain_output
-        batch = adjust_batch(self.config, batch)
-        batch.batch["response_mask"] = compute_response_mask(batch)
-
-        if self.config.trainer.balance_batch:
-            self._balance_batch(batch, metrics=metrics)
-
-        batch.meta_info["global_token_num"] = torch.sum(
-            batch.batch["attention_mask"], dim=-1).tolist()
-
-        # Reward
-        with _timer("reward", timing_raw):
-            reward_tensor, reward_extra_infos_dict = compute_reward(batch, self.reward_fn)
-        batch.batch["token_level_scores"] = reward_tensor
-        if reward_extra_infos_dict:
-            batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
-
-        # Apply invalid action penalty
-        if self.config.actor_rollout_ref.actor.get('use_invalid_action_penalty', True):
-            batch, invalid_metrics = apply_invalid_action_penalty(
-                batch,
-                invalid_action_penalty_coef=self.config.actor_rollout_ref.actor.invalid_action_penalty_coef)
-            metrics.update(invalid_metrics)
-
-        # token_level_rewards
-        if self.config.algorithm.use_kl_in_reward:
-            batch, kl_metrics = apply_kl_penalty(
-                batch, kl_ctrl=self.kl_ctrl_in_reward,
-                kl_penalty=self.config.algorithm.kl_penalty)
-            metrics.update(kl_metrics)
-        else:
-            batch.batch["token_level_rewards"] = batch.batch["token_level_scores"]
-
-        # Old log probs
-        with _timer("old_log_prob", timing_raw):
-            old_log_prob = self.actor_rollout_wg.compute_log_prob(batch)
-            entropys = old_log_prob.batch["entropys"]
-            response_masks = batch.batch["response_mask"]
-            loss_agg_mode = self.config.actor_rollout_ref.actor.loss_agg_mode
-            entropy_loss = agg_loss(loss_mat=entropys, loss_mask=response_masks, loss_agg_mode=loss_agg_mode)
-            metrics["actor/entropy_loss"] = entropy_loss.detach().item()
-            old_log_prob.batch.pop("entropys")
-            batch = batch.union(old_log_prob)
-
-        # Ref log probs
-        if self.use_reference_policy:
-            with _timer("ref", timing_raw):
-                if not self.ref_in_actor:
-                    ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch)
-                else:
-                    ref_log_prob = self.actor_rollout_wg.compute_ref_log_prob(batch)
-                batch = batch.union(ref_log_prob)
-
-        # Advantage (standard GRPO, task-level z-score)
-        with _timer("adv", timing_raw):
-            norm_adv_by_std_in_grpo = self.config.algorithm.get("norm_adv_by_std_in_grpo", True)
-            batch = compute_advantage(
-                batch,
-                adv_estimator=self.config.algorithm.adv_estimator,
-                gamma=self.config.algorithm.gamma,
-                lam=self.config.algorithm.lam,
-                num_repeat=rollout_n,
-                norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
-                multi_turn=self.config.actor_rollout_ref.rollout.multi_turn.enable,
-                use_pf_ppo=self.config.algorithm.use_pf_ppo,
-                pf_ppo_reweight_method=self.config.algorithm.pf_ppo.reweight_method,
-                pf_ppo_weight_pow=self.config.algorithm.pf_ppo.weight_pow,
-                step_advantage_w=self.config.algorithm.gigpo.step_advantage_w,
-                gigpo_mode=self.config.algorithm.gigpo.mode,
-                gigpo_enable_similarity=self.config.algorithm.gigpo.enable_similarity,
-                gigpo_similarity_thresh=self.config.algorithm.gigpo.similarity_thresh,
-            )
-
-        # Update actor: GRPO
-        if self.config.trainer.critic_warmup <= self.global_steps:
-            with _timer("update_actor_grpo", timing_raw):
-                batch.meta_info["temperature"] = self.config.actor_rollout_ref.rollout.temperature
-                batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
-                batch.meta_info["hdpo_mode"] = "grpo"
-                actor_output = self.actor_rollout_wg.update_actor(batch)
-            actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
-            if "actor/grad_norm" in actor_output_metrics:
-                actor_output_metrics["actor/grad_norm_grpo"] = actor_output_metrics.pop("actor/grad_norm")
-            if "actor/pg_loss" in actor_output_metrics:
-                actor_output_metrics["actor/grpo_loss"] = actor_output_metrics.pop("actor/pg_loss")
-            if "actor/kl_loss" in actor_output_metrics:
-                actor_output_metrics["actor/kl_loss_grpo"] = actor_output_metrics.pop("actor/kl_loss")
-            metrics.update(actor_output_metrics)
-
-        print(f"[Dual] Update 1 (GRPO): {len(batch.batch['input_ids'])} samples")
-
-        # ══════════════════════════════════════════════════════════════
-        # Update 2a: Internalize JSD (guided branch, conditional)
-        # Condition: per-task guided_pr > plain_pr, take guided R>0 trajectories
-        # ══════════════════════════════════════════════════════════════
-        if run_guided and guided_output is not None:
-            # Find tasks where guided_pr > plain_pr
-            intern_fire_tasks = set()
-            for tidx in guided_task_pass_rates:
-                g_pr = guided_task_pass_rates[tidx]
-                p_pr = task_pass_rates.get(tidx, 0.0)
-                if g_pr > p_pr:
-                    intern_fire_tasks.add(tidx)
-
-            metrics['dual/intern_fire_rate'] = len(intern_fire_tasks) / n_total_tasks if n_total_tasks > 0 else 0.0
-
-            if len(intern_fire_tasks) > 0:
-                # Select guided R>0 samples from tasks that fire
-                g_group_uids = guided_output.non_tensor_batch['uid']
-                g_traj_uids = guided_output.non_tensor_batch['traj_uid']
-                g_rewards = guided_output.non_tensor_batch['episode_rewards']
-
-                g_uid_to_task_idx_local = {}
-                for uid in g_group_uids:
-                    if uid not in g_uid_to_task_idx_local:
-                        g_uid_to_task_idx_local[uid] = len(g_uid_to_task_idx_local)
-
-                jsd_mask = np.array([
-                    (g_uid_to_task_idx_local.get(g_uid, -1) in intern_fire_tasks) and (float(r) > 0)
-                    for g_uid, r in zip(g_group_uids, g_rewards)
-                ])
-                jsd_idxs = np.where(jsd_mask)[0]
-
-                if len(jsd_idxs) > 0:
-                    jsd_batch = guided_output.select_idxs(jsd_idxs)
-                    bs_jsd_real = len(jsd_batch)
-
-                    # Pad to divisible by micro_batch
-                    world_size = self.config.trainer.n_gpus_per_node * self.config.trainer.nnodes
-                    jsd_divisor = self.config.actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu * world_size
-                    remainder = bs_jsd_real % jsd_divisor
-                    if remainder != 0:
-                        to_add = jsd_divisor - remainder
-                        dup_indices = np.random.choice(bs_jsd_real, to_add, replace=(to_add > bs_jsd_real))
-                        dup_proto = jsd_batch.select_idxs(dup_indices)
-                        jsd_batch = DataProto.concat([jsd_batch, dup_proto])
-
-                    jsd_batch.batch["response_mask"] = compute_response_mask(jsd_batch)
-                    # Zero out padding masks
-                    if len(jsd_batch) > bs_jsd_real:
-                        jsd_batch.batch["response_mask"][bs_jsd_real:] = 0.0
-                        if "loss_mask" in jsd_batch.batch:
-                            jsd_batch.batch["loss_mask"][bs_jsd_real:] = 0.0
-
-                    # Update actor: JSD internalize
-                    if self.config.trainer.critic_warmup <= self.global_steps:
-                        with _timer("update_actor_intern_jsd", timing_raw):
-                            jsd_batch.meta_info["temperature"] = self.config.actor_rollout_ref.rollout.temperature
-                            jsd_batch.meta_info["global_token_num"] = torch.sum(
-                                jsd_batch.batch["attention_mask"], dim=-1).tolist()
-                            jsd_batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
-                            jsd_batch.meta_info["hdpo_mode"] = "jsd"
-                            jsd_batch.meta_info["hdpo_config"] = {
-                                'jsd_lambda': jsd_lambda_intern,
-                                'jsd_top_k': jsd_top_k,
-                                'jsd_temperature': jsd_temperature,
-                            }
-                            jsd_output = self.actor_rollout_wg.update_actor(jsd_batch)
-                        jsd_output_metrics = reduce_metrics(jsd_output.meta_info["metrics"])
-                        print(f"[Dual DEBUG] intern jsd_output_metrics keys: {list(jsd_output_metrics.keys())}")
-                        # Rename keys: indicator first, _intern suffix for alphabetical grouping
-                        intern_jsd_metrics = {}
-                        jsd_rename_map = {
-                            "actor/grad_norm": "actor/grad_norm_jsd_intern",
-                            "actor/jsd_loss": "actor/jsd_loss_intern",
-                            "actor/jsd_mean_per_token": "actor/jsd_mean_per_token_intern",
-                            "actor/jsd_max_per_token": "actor/jsd_max_per_token_intern",
-                            "actor/jsd_tail_mass": "actor/jsd_tail_mass_intern",
-                            "actor/jsd_token_count": "actor/jsd_token_count_intern",
-                        }
-                        skip_keys = {"actor/jsd_lambda"}
-                        for k, v in jsd_output_metrics.items():
-                            if k in skip_keys:
-                                continue
-                            elif k in jsd_rename_map:
-                                intern_jsd_metrics[jsd_rename_map[k]] = v
-                            else:
-                                intern_jsd_metrics[k] = v
-                        metrics.update(intern_jsd_metrics)
-
-                    print(f"[Dual] Update 2a (intern JSD): {bs_jsd_real} real samples, "
-                        f"fire_tasks={len(intern_fire_tasks)}/{n_total_tasks}")
-                else:
-                    print(f"[Dual] Update 2a (intern JSD): skipped, no R>0 in fire tasks")
-            else:
-                print(f"[Dual] Update 2a (intern JSD): skipped, no task satisfies guided_pr > plain_pr")
-
-        # ══════════════════════════════════════════════════════════════
-        # Update 2b: Robustness JSD (noskill branch, conditional)
-        # Condition: per-task noskill_pr > skill_pr (=plain_pr), take noskill R>0
-        # Need to construct plain_* fields: skill prompt + noskill response
-        # ══════════════════════════════════════════════════════════════
-        if run_noskill and noskill_output is not None:
-            # Find tasks where noskill_pr > plain_pr (skill_pr)
-            robust_fire_tasks = set()
-            for tidx in noskill_task_pass_rates:
-                ns_pr = noskill_task_pass_rates[tidx]
-                p_pr = task_pass_rates.get(tidx, 0.0)
-                if ns_pr > p_pr:
-                    robust_fire_tasks.add(tidx)
-
-            metrics['dual/robust_fire_rate'] = len(robust_fire_tasks) / n_total_tasks if n_total_tasks > 0 else 0.0
-
-            if len(robust_fire_tasks) > 0:
-                # Select noskill R>0 samples from tasks that fire
-                ns_group_uids = noskill_output.non_tensor_batch['uid']
-                ns_traj_uids = noskill_output.non_tensor_batch['traj_uid']
-                ns_rewards = noskill_output.non_tensor_batch['episode_rewards']
-
-                ns_uid_to_task_idx_local = {}
-                for uid in ns_group_uids:
-                    if uid not in ns_uid_to_task_idx_local:
-                        ns_uid_to_task_idx_local[uid] = len(ns_uid_to_task_idx_local)
-
-                robust_mask = np.array([
-                    (ns_uid_to_task_idx_local.get(g_uid, -1) in robust_fire_tasks) and (float(r) > 0)
-                    for g_uid, r in zip(ns_group_uids, ns_rewards)
-                ])
-                robust_idxs = np.where(robust_mask)[0]
-
-                if len(robust_idxs) > 0:
-                    robust_jsd_batch = noskill_output.select_idxs(robust_idxs)
-                    bs_robust_real = len(robust_jsd_batch)
-
-                    # ── Construct plain_* fields: skill prompt + noskill response ──
-                    # For each sample, find the corresponding Phase 1 prompt (skill version)
-                    # and replace the prompt portion to create the "student" input
-                    robust_uids = robust_jsd_batch.non_tensor_batch['uid']
-
-                    # Build uid -> first sample index in plain_output (to get skill prompt)
-                    p1_uid_to_first_idx = {}
-                    for i, uid in enumerate(plain_output.non_tensor_batch['uid']):
-                        if uid not in p1_uid_to_first_idx:
-                            p1_uid_to_first_idx[uid] = i
-
-                    # Get sequence length
-                    seq_len = robust_jsd_batch.batch['input_ids'].shape[1]
-
-                    # Construct plain_input_ids, plain_attention_mask, plain_position_ids
-                    plain_input_ids_list = []
-                    plain_attention_mask_list = []
-                    plain_position_ids_list = []
-
-                    for i in range(bs_robust_real):
-                        sample_uid = robust_uids[i]
-                        p1_idx = p1_uid_to_first_idx[sample_uid]
-
-                        # Skill prompt from Phase 1
-                        p1_input_ids = plain_output.batch['input_ids'][p1_idx]  # [seq_len]
-                        p1_attention_mask = plain_output.batch['attention_mask'][p1_idx]
-
-                        # Find prompt length in Phase 1 (non-response part)
-                        # Use response_mask or prompt boundary from non_tensor_batch
-                        if 'prompt_length' in plain_output.non_tensor_batch:
-                            skill_prompt_len = int(plain_output.non_tensor_batch['prompt_length'][p1_idx])
-                        else:
-                            # Fallback: find first response token (where response starts)
-                            p1_response_mask = plain_output.batch.get('response_mask', None)
-                            if p1_response_mask is not None:
-                                resp_positions = torch.where(p1_response_mask[p1_idx] > 0)[0]
-                                skill_prompt_len = int(resp_positions[0]) if len(resp_positions) > 0 else int(p1_attention_mask.sum())
-                            else:                                                                                                                             
-                                skill_prompt_len = int(p1_attention_mask.sum()) // 2  # rough fallback                                                        
-                                                                                                                                                            
-                        # Noskill response from this sample                                                                                                   
-                        ns_input_ids = robust_jsd_batch.batch['input_ids'][i]                                                                                 
-                        ns_attention_mask = robust_jsd_batch.batch['attention_mask'][i]                                                                       
-                                                                                                                                                            
-                        if 'prompt_length' in robust_jsd_batch.non_tensor_batch:                                                                              
-                            ns_prompt_len = int(robust_jsd_batch.non_tensor_batch['prompt_length'][i])                                                        
-                        else:                                                                                                                                 
-                            ns_resp_mask = robust_jsd_batch.batch.get('response_mask', None)                                                                  
-                            if ns_resp_mask is not None:                                                                                                      
-                                ns_resp_positions = torch.where(ns_resp_mask[i] > 0)[0]                                                                       
-                                ns_prompt_len = int(ns_resp_positions[0]) if len(ns_resp_positions) > 0 else int(ns_attention_mask.sum())                     
-                            else:                                                                                                                             
-                                ns_prompt_len = int(ns_attention_mask.sum()) // 2                                                                             
-                                                                                                                                                            
-                        # Response tokens from noskill                                                                                                        
-                        ns_response_ids = ns_input_ids[ns_prompt_len:]                                                                                        
-                        ns_response_len = int(ns_attention_mask[ns_prompt_len:].sum())                                                                        
-                                                                                                                                                            
-                        # Skill prompt tokens                                                                                                                 
-                        skill_prompt_ids = p1_input_ids[:skill_prompt_len]                                                                                    
-                                                                                                                                                            
-                        # Concatenate: skill_prompt + noskill_response, pad to seq_len                                                                        
-                        total_len = skill_prompt_len + ns_response_len                                                                                        
-                        pad_len = seq_len - total_len                                                                                                         
-                                                                                                                                                            
-                        if pad_len >= 0:
-                            # Left-pad with zeros (consistent with training format)
-                            new_input_ids = torch.cat([
-                                torch.zeros(pad_len, dtype=p1_input_ids.dtype, device=p1_input_ids.device),
-                                skill_prompt_ids[:skill_prompt_len],
-                                ns_response_ids[:ns_response_len],
-                            ])
-                            new_attention_mask = torch.cat([
-                                torch.zeros(pad_len, dtype=p1_attention_mask.dtype, device=p1_attention_mask.device),
-                                torch.ones(total_len, dtype=p1_attention_mask.dtype, device=p1_attention_mask.device),
-                            ])
-                        else:
-                            # Truncate from left (skill prompt) if too long
-                            overflow = -pad_len
-                            new_input_ids = torch.cat([
-                                skill_prompt_ids[overflow:skill_prompt_len],
-                                ns_response_ids[:ns_response_len],
-                            ])
-                            new_attention_mask = torch.ones(seq_len, dtype=p1_attention_mask.dtype, device=p1_attention_mask.device)
-
-                        # position_ids must match attention_mask: cumsum(mask)-1, clamp min=0
-                        new_position_ids = torch.clamp(torch.cumsum(new_attention_mask.long(), dim=-1) - 1, min=0)
-
-                        plain_input_ids_list.append(new_input_ids)
-                        plain_attention_mask_list.append(new_attention_mask)
-                        plain_position_ids_list.append(new_position_ids)
-
-                    # Stack into batch tensors
-                    robust_jsd_batch.batch['plain_input_ids'] = torch.stack(plain_input_ids_list)
-                    robust_jsd_batch.batch['plain_attention_mask'] = torch.stack(plain_attention_mask_list)
-                    robust_jsd_batch.batch['plain_position_ids'] = torch.stack(plain_position_ids_list)
-
-                    # Pad batch to divisible by micro_batch
-                    world_size = self.config.trainer.n_gpus_per_node * self.config.trainer.nnodes
-                    jsd_divisor = self.config.actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu * world_size
-                    remainder = bs_robust_real % jsd_divisor
-                    if remainder != 0:
-                        to_add = jsd_divisor - remainder
-                        dup_indices = np.random.choice(bs_robust_real, to_add, replace=(to_add > bs_robust_real))
-                        dup_proto = robust_jsd_batch.select_idxs(dup_indices)
-                        robust_jsd_batch = DataProto.concat([robust_jsd_batch, dup_proto])
-
-                    robust_jsd_batch.batch["response_mask"] = compute_response_mask(robust_jsd_batch)
-                    # Zero out padding masks
-                    if len(robust_jsd_batch) > bs_robust_real:
-                        robust_jsd_batch.batch["response_mask"][bs_robust_real:] = 0.0
-                        if "loss_mask" in robust_jsd_batch.batch:
-                            robust_jsd_batch.batch["loss_mask"][bs_robust_real:] = 0.0
-
-                    # Update actor: JSD robustness
-                    if self.config.trainer.critic_warmup <= self.global_steps:
-                        with _timer("update_actor_robust_jsd", timing_raw):
-                            robust_jsd_batch.meta_info["temperature"] = self.config.actor_rollout_ref.rollout.temperature
-                            robust_jsd_batch.meta_info["global_token_num"] = torch.sum(
-                                robust_jsd_batch.batch["attention_mask"], dim=-1).tolist()
-                            robust_jsd_batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
-                            robust_jsd_batch.meta_info["hdpo_mode"] = "jsd"
-                            robust_jsd_batch.meta_info["hdpo_config"] = {
-                                'jsd_lambda': jsd_lambda_robust,
-                                'jsd_top_k': jsd_top_k,
-                                'jsd_temperature': jsd_temperature,
-                            }
-                            robust_output = self.actor_rollout_wg.update_actor(robust_jsd_batch)
-                        robust_output_metrics = reduce_metrics(robust_output.meta_info["metrics"])
-                        # Rename keys: indicator first, _robust suffix for alphabetical grouping
-                        robust_jsd_metrics = {}
-                        skip_keys = {"actor/jsd_lambda"}
-                        jsd_rename_map_r = {
-                            "actor/grad_norm": "actor/grad_norm_jsd_robust",
-                            "actor/jsd_loss": "actor/jsd_loss_robust",
-                            "actor/jsd_mean_per_token": "actor/jsd_mean_per_token_robust",
-                            "actor/jsd_max_per_token": "actor/jsd_max_per_token_robust",
-                            "actor/jsd_tail_mass": "actor/jsd_tail_mass_robust",
-                            "actor/jsd_token_count": "actor/jsd_token_count_robust",
-                        }
-                        for k, v in robust_output_metrics.items():
-                            if k in skip_keys:
-                                continue
-                            elif k in jsd_rename_map_r:
-                                robust_jsd_metrics[jsd_rename_map_r[k]] = v
-                            else:
-                                robust_jsd_metrics[k] = v
-                        metrics.update(robust_jsd_metrics)
-
-                    print(f"[Dual] Update 2b (robust JSD): {bs_robust_real} real samples, "
-                        f"fire_tasks={len(robust_fire_tasks)}/{n_total_tasks}")
-                else:
-                    print(f"[Dual] Update 2b (robust JSD): skipped, no R>0 in fire tasks")
-            else:
-                print(f"[Dual] Update 2b (robust JSD): skipped, no task satisfies noskill_pr > plain_pr")
-
-        return batch, reward_extra_infos_dict
-
     def _ours_step(self, gen_batch, timing_raw, metrics):
         """Three-tier adaptive routing: hard(JSD) / medium(GRPO) / easy(contrastive).
 
@@ -3268,21 +1772,12 @@ class RayPPOTrainer:
                                     if p2_traj_to_task[t_uid] in hard_task_indices and r > 0)
                 n_guided_r1_steps = int(guided_r1_mask.sum())
 
-                metrics['internalize/guided_pass_rate'] = n_guided_pass / n_guided_total if n_guided_total > 0 else 0.0
-                metrics['internalize/guided_pass_count'] = n_guided_pass
-                metrics['internalize/jsd_token_count'] = n_guided_r1_steps
-
                 print(f"[Ours] Phase 2 (hard): guided_traj={n_guided_total}, "
-                      f"R=1={n_guided_pass} (rate={metrics['internalize/guided_pass_rate']:.3f}), "
+                      f"R=1={n_guided_pass} (rate={n_guided_pass / n_guided_total if n_guided_total > 0 else 0.0:.3f}), "
                       f"jsd_token_count={n_guided_r1_steps}")
 
                 if n_guided_pass > 0:
                     guided_r1_batch = phase2_output.select_idxs(guided_r1_idxs)
-            else:
-                metrics['internalize/guided_pass_rate'] = 0.0
-                metrics['internalize/guided_pass_count'] = 0
-                metrics['internalize/jsd_token_count'] = 0
-
             # ── Extract easy task data (for contrastive) ──
             if n_easy > 0:
                 # Select samples belonging to easy tasks
@@ -3336,11 +1831,6 @@ class RayPPOTrainer:
                         extra_meta={"tier": "easy"},
                     )
 
-        else:
-            metrics['internalize/guided_pass_rate'] = 0.0
-            metrics['internalize/guided_pass_count'] = 0
-            metrics['internalize/jsd_token_count'] = 0
-
         # Restore env mode
         self.envs.restore_mode()
 
@@ -3391,30 +1881,17 @@ class RayPPOTrainer:
             contrastive_context_types = merged_easy.non_tensor_batch.get('context_type', None)
             norm_adv_by_std_in_grpo = self.config.algorithm.get("norm_adv_by_std_in_grpo", True)
             utilize_cfg = self.config.env.get('utilize', {})
-            use_decomposed = utilize_cfg.get('decomposed_contrastive', False)
             contrastive_omega = utilize_cfg.get('omega', 1.0)
-            use_ema_delta = utilize_cfg.get('use_ema_delta', False)
             adv2_clip = utilize_cfg.get('adv2_clip', 3.0)
             effective_rollout_n = rollout_n * 2
-            # Ablation: disable_utilize forces omega=0 (no contrastive adv2, standard GRPO only)
-            ablation_disable_utilize = ours_cfg.get('disable_utilize', False)
             # During warmup: disable adv2 (omega=0), only adv1 (standard GRPO per task)
-            # EMA delta still accumulates but doesn't affect training
-            if is_warmup or ablation_disable_utilize:
+            if is_warmup:
                 effective_omega = 0.0
-                ema_delta_value = None
+                delta_baseline_value = None
             else:
                 effective_omega = contrastive_omega
-                # Pass delta baseline if enabled and available (None on first easy step → falls back to batch mode)
-                if use_ema_delta:
-                    if self._delta_baseline_mode == 'window' and len(self._delta_window) > 0:
-                        ema_delta_value = float(np.mean(list(self._delta_window)))
-                    elif self._delta_baseline_mode == 'ema' and self._ema_delta is not None:
-                        ema_delta_value = self._ema_delta
-                    else:
-                        ema_delta_value = None
-                else:
-                    ema_delta_value = None
+                # Use sliding window mean as delta baseline (None on first easy step → falls back to batch mode)
+                delta_baseline_value = float(np.mean(list(self._delta_window))) if len(self._delta_window) > 0 else None
             merged_easy = compute_advantage(
                 merged_easy,
                 adv_estimator=self.config.algorithm.adv_estimator,
@@ -3431,9 +1908,8 @@ class RayPPOTrainer:
                 gigpo_enable_similarity=self.config.algorithm.gigpo.enable_similarity,
                 gigpo_similarity_thresh=self.config.algorithm.gigpo.similarity_thresh,
                 contrastive_context_types=contrastive_context_types,
-                use_decomposed_contrastive=use_decomposed,
                 contrastive_omega=effective_omega,
-                ema_delta=ema_delta_value,
+                ema_delta=delta_baseline_value,
                 adv2_clip=adv2_clip,
             )
 
@@ -3470,14 +1946,8 @@ class RayPPOTrainer:
                     if uid not in seen_trajs:
                         is_succ = float(episode_rewards_arr[i]) > 0 if episode_rewards_arr is not None else False
                         seen_trajs[uid] = (contrastive_context_types[i], is_succ)
-                n_top_k_success = sum(1 for ct, s in seen_trajs.values() if ct == 'top_k' and s)
-                n_top_k_trajs = sum(1 for ct, _ in seen_trajs.values() if ct == 'top_k')
-                n_no_skill_success = sum(1 for ct, s in seen_trajs.values() if ct == 'no_skill' and s)
-                n_no_skill_trajs = sum(1 for ct, _ in seen_trajs.values() if ct == 'no_skill')
-                metrics['utilize/skill_success_rate'] = n_top_k_success / n_top_k_trajs if n_top_k_trajs > 0 else 0.0
-                metrics['utilize/noskill_success_rate'] = n_no_skill_success / n_no_skill_trajs if n_no_skill_trajs > 0 else 0.0
-
                 # Per-task delta: mean(skill_pass_rate - noskill_pass_rate) across easy tasks
+                # Used to update the sliding window baseline for adv2 computation
                 group_uids_merged = merged_easy.non_tensor_batch.get('uid', None)
                 if group_uids_merged is not None:
                     task_skill_rewards = defaultdict(list)
@@ -3491,7 +1961,7 @@ class RayPPOTrainer:
                             elif ct == 'no_skill':
                                 task_noskill_rewards[g_uid].append(float(is_succ))
 
-                    # Compute per-task delta
+                    # Compute per-task delta and update sliding window
                     task_deltas = []
                     for g_uid in task_skill_rewards:
                         skill_pr = np.mean(task_skill_rewards[g_uid])
@@ -3500,21 +1970,7 @@ class RayPPOTrainer:
 
                     if task_deltas:
                         mean_delta = float(np.mean(task_deltas))
-                        metrics['utilize/delta'] = mean_delta
-                        # Update delta baseline (after computing adv2 with old value)
-                        # Always update both EMA and window so switching mode mid-run is seamless
-                        ema_delta_alpha = utilize_cfg.get('ema_delta_alpha', 0.1)
-                        if self._ema_delta is None:
-                            self._ema_delta = mean_delta
-                        else:
-                            self._ema_delta = ema_delta_alpha * mean_delta + (1 - ema_delta_alpha) * self._ema_delta
                         self._delta_window.append(mean_delta)
-                        # Log the effective baseline value
-                        if self._delta_baseline_mode == 'window' and len(self._delta_window) > 0:
-                            metrics['utilize/delta_baseline'] = float(np.mean(list(self._delta_window)))
-                        else:
-                            metrics['utilize/delta_baseline'] = self._ema_delta
-                        metrics['utilize/ema_delta'] = self._ema_delta
 
             # Old log probs + ref log probs
             with _timer("old_log_prob_easy", timing_raw):
@@ -3822,9 +2278,7 @@ class RayPPOTrainer:
                     jsd_batch.batch["loss_mask"][bs_jsd_real:] = 0.0
 
             # Update actor (independent JSD step)
-            # Ablation: disable_jsd skips the actual update but keeps all metrics above
-            ablation_disable_jsd = ours_cfg.get('disable_jsd', False)
-            if self.config.trainer.critic_warmup <= self.global_steps and not ablation_disable_jsd:
+            if self.config.trainer.critic_warmup <= self.global_steps:
                 with _timer("update_actor_jsd", timing_raw):
                     jsd_batch.meta_info["temperature"] = self.config.actor_rollout_ref.rollout.temperature
                     jsd_batch.meta_info["global_token_num"] = torch.sum(
@@ -3842,8 +2296,7 @@ class RayPPOTrainer:
                     jsd_output_metrics["actor/grad_norm_jsd"] = jsd_output_metrics.pop("actor/grad_norm")
                 metrics.update(jsd_output_metrics)
 
-            print(f"[Ours] Update 4 (hard/jsd): {bs_jsd_real} real samples"
-                  f"{' [ABLATION: JSD disabled]' if ablation_disable_jsd else ''}")
+            print(f"[Ours] Update 4 (hard/jsd): {bs_jsd_real} real samples")
 
         # ══════════════════════════════════════════════════════════════
         # Fallback: if no batch set (degenerate edge case)
@@ -3980,52 +2433,29 @@ class RayPPOTrainer:
 
                 is_last_step = self.global_steps >= self.total_training_steps
 
-                dual_distill_mode = self.config.env.get('dual_distill_mode', False)
-                ours_mode = self.config.env.get('ours_mode', False)
-                internalize_mode = self.config.env.get('internalize_mode', False)
-                utilize_mode = self.config.env.get('utilize_mode', False)
-
                 with _timer("step", timing_raw):
-                  if dual_distill_mode:
-                    # ═══════════ Unified GRPO + Dual Adaptive Distillation ═══════════
-                    batch, reward_extra_infos_dict = self._dual_distill_step(
-                        gen_batch, timing_raw, metrics)
-                  elif ours_mode:
-                    # ═══════════ Three-tier adaptive routing ═══════════
                     batch, reward_extra_infos_dict = self._ours_step(
                         gen_batch, timing_raw, metrics)
-                  elif internalize_mode:
-                    # ═══════════ Internalize only (JSD distillation) ═══════════
-                    batch, reward_extra_infos_dict = self._internalize_step(
-                        gen_batch, timing_raw, metrics)
-                  elif utilize_mode:
-                    # ═══════════ Utilize only (contrastive GRPO) ═══════════
-                    batch, reward_extra_infos_dict = self._utilize_step(
-                        gen_batch, timing_raw, metrics)
-                  else:
-                    raise ValueError(
-                        "Skill0.5 requires one of dual_distill_mode, ours_mode, internalize_mode, or utilize_mode to be True. "
-                        "For baseline GRPO, use SkillRL directly.")
 
-                  # Note: plain rollout dump is now done inside each _*_step method
-                  # (before balance_batch reorders data), so we skip the post-update dump here.
+                # Note: plain rollout dump is now done inside each _*_step method
+                # (before balance_batch reorders data), so we skip the post-update dump here.
 
-                  # validate
-                  if self.val_reward_fn is not None and self.config.trainer.test_freq > 0 and (is_last_step or self.global_steps % self.config.trainer.test_freq == 0):
-                      with _timer("testing", timing_raw):
-                          val_metrics: dict = self._validate()
-                          if is_last_step:
-                              last_val_metrics = val_metrics
-                      metrics.update(val_metrics)
-                      # OOD validation
-                      if self.val_envs_ood is not None:
-                          with _timer("testing_ood", timing_raw):
-                              val_ood_metrics = self._validate_ood()
-                          metrics.update(val_ood_metrics)
+                # validate
+                if self.val_reward_fn is not None and self.config.trainer.test_freq > 0 and (is_last_step or self.global_steps % self.config.trainer.test_freq == 0):
+                    with _timer("testing", timing_raw):
+                        val_metrics: dict = self._validate()
+                        if is_last_step:
+                            last_val_metrics = val_metrics
+                    metrics.update(val_metrics)
+                    # OOD validation
+                    if self.val_envs_ood is not None:
+                        with _timer("testing_ood", timing_raw):
+                            val_ood_metrics = self._validate_ood()
+                        metrics.update(val_ood_metrics)
 
-                  if self.config.trainer.save_freq > 0 and (is_last_step or self.global_steps % self.config.trainer.save_freq == 0):
-                      with _timer("save_checkpoint", timing_raw):
-                          self._save_checkpoint()
+                if self.config.trainer.save_freq > 0 and (is_last_step or self.global_steps % self.config.trainer.save_freq == 0):
+                    with _timer("save_checkpoint", timing_raw):
+                        self._save_checkpoint()
 
                 # training metrics
                 metrics.update(
@@ -4037,7 +2467,7 @@ class RayPPOTrainer:
                 # collect metrics
                 # Preserve Phase 1 full-batch episode metrics (set in _ours_step) before
                 # compute_data_metrics overwrites them with sub-batch values
-                episode_keys_override = {k: v for k, v in metrics.items() if k.startswith("episode/")} if ours_mode else {}
+                episode_keys_override = {k: v for k, v in metrics.items() if k.startswith("episode/")}
                 metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
                 if episode_keys_override:
                     metrics.update(episode_keys_override)
