@@ -1,6 +1,6 @@
 # Skill0.5
 
-Code for *Skill0.5: Joint Skill Internalization and Utilization for Out-of-Distribution Generalization in Agentic Reinforcement Learning*.
+Code for [*Skill0.5: Joint Skill Internalization and Utilization for Out-of-Distribution Generalization in Agentic Reinforcement Learning*](https://arxiv.org/pdf/2605.28424).
 
 ## Overview
 
