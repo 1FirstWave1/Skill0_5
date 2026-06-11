@@ -35,7 +35,7 @@ pip3 install alfworld
 pip3 install sentence-transformers faiss-cpu
 
 # ==================== Model & Data Config ====================
-export MODEL_PATH="${MODEL_PATH:?Please set MODEL_PATH to your SFT checkpoint}"
+export MODEL_PATH="${MODEL_PATH:?Please set MODEL_PATH to your Qwen2.5-7B-Instruct model path}"
 export ALFWORLD_DATA="${ALFWORLD_DATA:?Please set ALFWORLD_DATA to the ALFWorld data directory}"
 
 export WANDB_NAME="skill05_alfworld_ood"

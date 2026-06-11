@@ -47,7 +47,7 @@ fi
 java -version
 
 # ==================== Model & Data Config ====================
-export MODEL_PATH="${MODEL_PATH:?Please set MODEL_PATH to your SFT checkpoint}"
+export MODEL_PATH="${MODEL_PATH:?Please set MODEL_PATH to your Qwen2.5-7B-Instruct model path}"
 export WEBSHOP_DATA="${WEBSHOP_DATA:?Please set WEBSHOP_DATA to the WebShop data directory}"
 
 export WANDB_NAME="skill05_webshop_ood"

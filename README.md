@@ -92,7 +92,7 @@ All training scripts are under `scripts/` and assume the repo root as working di
 ### ALFWorld OOD
 
 ```bash
-export MODEL_PATH=/path/to/your/sft_checkpoint
+export MODEL_PATH=/path/to/Qwen2.5-7B-Instruct
 export ALFWORLD_DATA=/path/to/alfworld_data
 
 bash scripts/train_alfworld_ood.sh
@@ -101,7 +101,7 @@ bash scripts/train_alfworld_ood.sh
 ### WebShop OOD
 
 ```bash
-export MODEL_PATH=/path/to/your/sft_checkpoint
+export MODEL_PATH=/path/to/Qwen2.5-7B-Instruct
 export WEBSHOP_DATA=/path/to/webshop_data
 
 bash scripts/train_webshop_ood.sh
