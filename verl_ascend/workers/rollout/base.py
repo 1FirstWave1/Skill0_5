@@ -35,7 +35,7 @@ class BaseRollout(ABC):
         model_config: HFModelConfig,
         device_mesh: DeviceMesh,
     ):
-        self.config = omega_conf_to_dataclass(config)
+        self.config = omega_conf_to_dataclass(config, dataclass_type=RolloutConfig)
         self.model_config: HFModelConfig = omega_conf_to_dataclass(model_config, dataclass_type=HFModelConfig)
         self.device_mesh = device_mesh
 

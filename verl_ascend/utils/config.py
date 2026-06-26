@@ -147,8 +147,10 @@ def validate_config(
                     f"'{name}.{param}' because only '*_{param_per_gpu}' is supported (the former is deprecated)."
                 )
 
+    from verl.workers.config import FSDPActorConfig, FSDPCriticConfig
+
     # Actor validation done in ActorConfig.__post_init__ and validate()
-    actor_config = omega_conf_to_dataclass(config.actor_rollout_ref.actor)
+    actor_config = omega_conf_to_dataclass(config.actor_rollout_ref.actor, dataclass_type=FSDPActorConfig)
     actor_config.validate(n_gpus, config.data.train_batch_size, config.actor_rollout_ref.model)
 
     if not config.actor_rollout_ref.actor.use_dynamic_bsz:
@@ -182,7 +184,7 @@ def validate_config(
 
     # critic
     if use_critic:
-        critic_config = omega_conf_to_dataclass(config.critic)
+        critic_config = omega_conf_to_dataclass(config.critic, dataclass_type=FSDPCriticConfig)
         critic_config.validate(n_gpus, config.data.train_batch_size)
 
     if config.data.get("val_batch_size", None) is not None:

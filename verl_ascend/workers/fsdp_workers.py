@@ -85,7 +85,7 @@ from verl.utils.profiler import DistProfiler, DistProfilerExtension, ProfilerCon
 from verl.utils.profiler.performance import reduce_timing, topk_reduce_ratio_min_max
 from verl.utils.py_functional import convert_to_regular_types
 from verl.utils.ray_utils import get_event_loop
-from verl.workers.config import FSDPCriticConfig, FSDPEngineConfig, HFModelConfig, RolloutConfig
+from verl.workers.config import FSDPActorConfig, FSDPCriticConfig, FSDPEngineConfig, HFModelConfig, RolloutConfig
 from verl.workers.config.optimizer import build_optimizer
 from verl.workers.rollout import get_rollout_class
 from verl.workers.sharding_manager.fsdp_ulysses import FSDPUlyssesShardingManager
@@ -606,7 +606,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         from torch.distributed.device_mesh import init_device_mesh
 
         # 1. parse rollout and huggingface model config
-        rollout_config: RolloutConfig = omega_conf_to_dataclass(self.config.rollout)
+        rollout_config: RolloutConfig = omega_conf_to_dataclass(self.config.rollout, dataclass_type=RolloutConfig)
         model_config: HFModelConfig = omega_conf_to_dataclass(self.config.model, dataclass_type=HFModelConfig)
         self.model_config = model_config
 
@@ -790,7 +790,9 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             # we need the model for actor and rollout
             if self._is_actor:
                 optim_config = self.config.actor.optim
-                fsdp_config = omega_conf_to_dataclass(self.config.actor.fsdp_config)
+                fsdp_config = omega_conf_to_dataclass(
+                    self.config.actor.fsdp_config, dataclass_type=FSDPEngineConfig
+                )
             else:
                 optim_config = None
                 fsdp_config = FSDPEngineConfig()
@@ -835,7 +837,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 log_gpu_memory_usage("After offload actor optimizer during init", logger=logger)
 
         if self._is_actor:
-            actor_cfg = omega_conf_to_dataclass(self.config.actor)
+            actor_cfg = omega_conf_to_dataclass(self.config.actor, dataclass_type=FSDPActorConfig)
             self.actor = DataParallelPPOActor(
                 config=actor_cfg, actor_module=self.actor_module_fsdp, actor_optimizer=self.actor_optimizer
             )
@@ -862,7 +864,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
             self.ref_module_fsdp = self._build_model_optimizer(
                 model_path=local_path,
-                fsdp_config=omega_conf_to_dataclass(self.config.ref.fsdp_config),
+                fsdp_config=omega_conf_to_dataclass(self.config.ref.fsdp_config, dataclass_type=FSDPEngineConfig),
                 optim_config=None,
                 override_model_config=override_model_config,
                 use_remove_padding=use_remove_padding,
