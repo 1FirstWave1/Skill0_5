@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import inspect
-from functools import wraps
+from functools import partial, wraps
 from types import FunctionType
 from typing import Dict, List, Tuple
 
@@ -394,6 +394,88 @@ def collect_dp_compute_data_proto(worker_group, output):
 
     output = collect_dp_compute(worker_group, output)
     return _concat_data_proto_or_future(output)
+
+
+def dispatch_nd_compute(dp_rank_mapping: List[int], dp_size, worker_group, *args, **kwargs):
+    from verl.single_controller.base.worker_group import WorkerGroup
+
+    assert isinstance(worker_group, WorkerGroup)
+    assert len(dp_rank_mapping) == worker_group.world_size
+
+    all_args = []
+    for arg in args:
+        assert isinstance(arg, (Tuple, List)) and len(arg) == dp_size
+        all_args.append([arg[dp_rank_mapping[rank]] for rank in range(worker_group.world_size)])
+    all_args = tuple(all_args)
+
+    all_kwargs = {}
+    for key, value in kwargs.items():
+        assert isinstance(value, (Tuple, List)) and len(value) == dp_size
+        all_kwargs[key] = [value[dp_rank_mapping[rank]] for rank in range(worker_group.world_size)]
+    return all_args, all_kwargs
+
+
+def collect_nd_compute(collect_mask: List[bool], worker_group, output):
+    from verl.single_controller.base.worker_group import WorkerGroup
+
+    assert isinstance(worker_group, WorkerGroup)
+    assert len(output) == worker_group.world_size
+    assert len(collect_mask) == worker_group.world_size
+
+    output_in_dp = []
+    for global_rank in range(worker_group.world_size):
+        if collect_mask[global_rank]:
+            output_in_dp.append(output[global_rank])
+    return output_in_dp
+
+
+def dispatch_nd_compute_dataproto(dp_rank_mapping: List[int], dp_size, worker_group, *args, **kwargs):
+    splitted_args, splitted_kwargs = _split_args_kwargs_data_proto(dp_size, *args, **kwargs)
+    return dispatch_nd_compute(dp_rank_mapping, dp_size, worker_group, *splitted_args, **splitted_kwargs)
+
+
+def collect_nd_compute_dataproto(collect_mask: List[bool], worker_group, output):
+    import ray
+
+    from verl.protocol import DataProto
+
+    output = collect_nd_compute(collect_mask, worker_group, output)
+    for o in output:
+        assert isinstance(o, (DataProto, ray.ObjectRef)), f"expecting {o} to be DataProto | ray.ObjectRef, but got {type(o)}"
+    return _concat_data_proto_or_future(output)
+
+
+def dispatch_lazy_compute_data_proto(mesh_name, worker_group, *args, **kwargs):
+    from verl.single_controller.base.worker_group import WorkerGroup
+
+    assert isinstance(worker_group, WorkerGroup)
+    if mesh_name not in worker_group._dispatch_info:
+        worker_group._dispatch_info[mesh_name] = worker_group._query_dispatch_info(mesh_name)
+        assert len(worker_group._dispatch_info[mesh_name]) == worker_group.world_size
+
+    dp_rank_mapping = worker_group._dispatch_info[mesh_name]
+    dp_size = max(dp_rank_mapping) + 1
+    return dispatch_nd_compute_dataproto(dp_rank_mapping, dp_size, worker_group, *args, **kwargs)
+
+
+def collect_lazy_compute_data_proto(mesh_name, worker_group, *args, **kwargs):
+    from verl.single_controller.base.worker_group import WorkerGroup
+
+    assert isinstance(worker_group, WorkerGroup)
+    assert mesh_name in worker_group._dispatch_info
+    if mesh_name not in worker_group._collect_info:
+        worker_group._collect_info[mesh_name] = worker_group._query_collect_info(mesh_name)
+        assert len(worker_group._collect_info[mesh_name]) == worker_group.world_size
+
+    collect_mask = worker_group._collect_info[mesh_name]
+    return collect_nd_compute_dataproto(collect_mask, worker_group, *args, **kwargs)
+
+
+def make_nd_compute_dataproto_dispatch_fn(mesh_name):
+    return {
+        "dispatch_fn": partial(dispatch_lazy_compute_data_proto, mesh_name),
+        "collect_fn": partial(collect_lazy_compute_data_proto, mesh_name),
+    }
 
 
 # Global registry for dispatch mode.

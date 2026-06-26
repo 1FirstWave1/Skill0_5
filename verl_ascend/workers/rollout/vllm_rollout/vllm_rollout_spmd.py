@@ -30,7 +30,7 @@ import logging
 import os
 from contextlib import contextmanager
 from copy import deepcopy
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, Generator, List, Union
 
 import numpy as np
 import ray
@@ -47,6 +47,7 @@ from verl.utils.debug import GPUMemoryLogger
 from verl.utils.device import is_npu_available
 from verl.utils.ray_utils import ray_noset_visible_devices
 from verl.utils.torch_functional import get_response_mask, pad_2d_list_to_length
+from verl.utils.vllm.patch import patch_vllm_moe_model_weight_loader
 from verl.workers.rollout.base import BaseRollout
 from verl.workers.rollout.vllm_rollout.ascend_runtime import ascend_vllm_engine_kwargs, prepare_ascend_vllm_runtime
 
@@ -103,7 +104,16 @@ def _repeat_interleave(value: Union[torch.Tensor, np.ndarray], repeats: int) -> 
 
 
 class vLLMRollout(BaseRollout):
-    def __init__(self, model_path: str, config: DictConfig, tokenizer, model_hf_config, **kwargs):
+    def __init__(
+        self,
+        model_path: str = None,
+        config: DictConfig = None,
+        tokenizer=None,
+        model_hf_config=None,
+        model_config=None,
+        device_mesh=None,
+        **kwargs,
+    ):
         """A vLLM rollout. It requires the module is supported by the vllm.
 
         Args:
@@ -113,8 +123,20 @@ class vLLMRollout(BaseRollout):
             model_hf_config: the huggingface config to initiallize the generating model in vllm
             **kwargs: train_tp, for Megatron Backend to initialize hybrid engine (zero redundancy) process group
         """
-        super().__init__()
+        if model_config is not None:
+            model_path = model_config.local_path
+            tokenizer = model_config.tokenizer
+            model_hf_config = model_config.hf_config
+            kwargs.setdefault("trust_remote_code", model_config.trust_remote_code)
+            if getattr(model_config, "lora_rank", 0) > 0:
+                kwargs.setdefault(
+                    "lora_kwargs",
+                    {"enable_lora": True, "max_loras": 1, "max_lora_rank": model_config.lora_rank},
+                )
+
         self.config = config
+        self.model_config = model_config
+        self.device_mesh = device_mesh
         assert not (not config.enforce_eager and config.free_cache_engine), "disable CUDA graph (enforce_eager = False) if free cache engine"
 
         tensor_parallel_size = self.config.get("tensor_model_parallel_size", 1)
@@ -264,6 +286,59 @@ class vLLMRollout(BaseRollout):
         # if len(old_sampling_params_args):
         for key, value in old_sampling_params_args.items():
             setattr(self.sampling_params, key, value)
+
+    async def resume(self, tags: list[str]):
+        """Resume rollout weights or KV cache before generation."""
+        if not self.config.free_cache_engine:
+            return
+
+        if hasattr(self.inference_engine, "wake_up"):
+            self.inference_engine.wake_up(tags=tags)
+        elif "kv_cache" in tags and hasattr(self.inference_engine, "init_cache_engine"):
+            self.inference_engine.init_cache_engine()
+
+    async def release(self):
+        """Release rollout memory after generation."""
+        if not self.config.free_cache_engine:
+            return
+
+        if hasattr(self.inference_engine, "sleep"):
+            self.inference_engine.sleep(level=1)
+        elif hasattr(self.inference_engine, "free_cache_engine"):
+            self.inference_engine.free_cache_engine()
+
+    async def update_weights(self, weights: Generator[tuple[str, torch.Tensor], None, None], **kwargs):
+        """Load FSDP actor weights into the local vLLM engine."""
+        peft_config = kwargs.get("peft_config", None)
+        base_sync_done = kwargs.get("base_sync_done", False)
+
+        worker = self.inference_engine.llm_engine.model_executor.driver_worker.worker
+        model_runner = worker.model_runner
+        model = model_runner.get_model() if hasattr(model_runner, "get_model") else model_runner.model
+
+        if peft_config is not None and base_sync_done:
+            from dataclasses import asdict
+
+            from verl.utils.vllm import TensorLoRARequest
+            from verl.workers.rollout.vllm_rollout.utils import VLLM_LORA_INT_ID, VLLM_LORA_NAME, VLLM_LORA_PATH
+
+            if hasattr(worker, "remove_lora"):
+                worker.remove_lora(VLLM_LORA_INT_ID)
+            lora_tensors = dict(weights)
+            lora_request = TensorLoRARequest(
+                lora_name=VLLM_LORA_NAME,
+                lora_int_id=VLLM_LORA_INT_ID,
+                lora_path=VLLM_LORA_PATH,
+                peft_config=asdict(peft_config),
+                lora_tensors=lora_tensors,
+            )
+            worker.add_lora(lora_request)
+            logger.info(f"vLLM load LoRA weights, loaded_params: {len(lora_tensors)}")
+            return
+
+        patch_vllm_moe_model_weight_loader(model)
+        loaded_params = model.load_weights(weights)
+        logger.info(f"vLLM load weights, loaded_params: {len(loaded_params) if loaded_params else -1}")
 
     @GPUMemoryLogger(role="vllm rollout spmd", logger=logger)
     @torch.no_grad()

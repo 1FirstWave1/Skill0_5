@@ -12,8 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .base import BaseRollout, get_rollout_class
-from .hf_rollout import HFRollout
-from .naive import NaiveRollout
+from typing import Callable, Optional
 
-__all__ = ["BaseRollout", "NaiveRollout", "HFRollout", "get_rollout_class"]
+
+def mark_start_range(
+    message: Optional[str] = None,
+    color: Optional[str] = None,
+    domain: Optional[str] = None,
+    category: Optional[str] = None,
+) -> None:
+    pass
+
+
+def mark_end_range(range_id: str) -> None:
+    pass
+
+
+def mark_annotate(
+    message: Optional[str] = None,
+    color: Optional[str] = None,
+    domain: Optional[str] = None,
+    category: Optional[str] = None,
+) -> Callable:
+    def decorator(func):
+        return func
+
+    return decorator

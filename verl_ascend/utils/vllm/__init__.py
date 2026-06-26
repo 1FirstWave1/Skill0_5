@@ -1,4 +1,4 @@
-# Copyright 2024 Bytedance Ltd. and/or its affiliates
+# Copyright 2025 Bytedance Ltd. and/or its affiliates
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,8 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .base import BaseRollout, get_rollout_class
-from .hf_rollout import HFRollout
-from .naive import NaiveRollout
+from .utils import TensorLoRARequest, VLLMHijack, is_version_ge
 
-__all__ = ["BaseRollout", "NaiveRollout", "HFRollout", "get_rollout_class"]
+# The contents of vllm/patch.py should not be imported here, because the contents of
+# patch.py should be imported after the vllm LLM instance is created. Therefore,
+# wait until you actually start using it before importing the contents of
+# patch.py separately.
+
+__all__ = [
+    "TensorLoRARequest",
+    "VLLMHijack",
+    "is_version_ge",
+]
