@@ -330,6 +330,7 @@ class TrajectoryCollector:
             gen_batch: DataProto,
             actor_rollout_wg,
             envs: EnvironmentManagerBase,
+            rollout_generator=None,
             uid_override: np.ndarray = None,
             reset_info: dict = None,
             ) -> DataProto:
@@ -414,7 +415,16 @@ class TrajectoryCollector:
 
             # pad to be divisible by dp_size
             batch_input_padded, pad_size = pad_dataproto_to_divisor(batch_input, actor_rollout_wg.world_size)
-            batch_output_padded = actor_rollout_wg.generate_sequences(batch_input_padded)
+            if rollout_generator is None:
+                batch_output_padded = actor_rollout_wg.generate_sequences(batch_input_padded)
+            elif rollout_generator.__class__.__name__ == "AgentLoopManager":
+                batch_output_padded = rollout_generator.generate_sequences(batch_input_padded)
+            else:
+                rollout_generator.wake_up()
+                try:
+                    batch_output_padded = rollout_generator.generate_sequences(batch_input_padded)
+                finally:
+                    rollout_generator.sleep()
             # # unpad
             batch_output = unpad_dataproto(batch_output_padded, pad_size=pad_size)
 
@@ -507,6 +517,7 @@ class TrajectoryCollector:
             self,
             gen_batch: DataProto, 
             actor_rollout_wg, 
+            rollout_generator,
             envs: EnvironmentManagerBase,
             ) -> DataProto:
         """
@@ -544,6 +555,7 @@ class TrajectoryCollector:
             batch_list, episode_rewards, episode_lengths, success, traj_uid, tool_callings = self.vanilla_multi_turn_loop(
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
+                rollout_generator=rollout_generator,
                 envs=envs,
             )
             batch_list, episode_rewards, episode_lengths, success, traj_uid, tool_callings = filter_group_data(batch_list=batch_list, 
@@ -576,6 +588,7 @@ class TrajectoryCollector:
             gen_batch: DataProto,
             actor_rollout_wg,
             envs: EnvironmentManagerBase,
+            rollout_generator=None,
             is_train: bool = True,
             reset_info: dict = None,
             uid_base: np.ndarray = None,
@@ -639,6 +652,7 @@ class TrajectoryCollector:
                     self.vanilla_multi_turn_loop(
                         gen_batch=wave_gen_batch,
                         actor_rollout_wg=actor_rollout_wg,
+                        rollout_generator=rollout_generator,
                         envs=envs,
                         uid_override=uid_override,
                         reset_info=reset_info,
@@ -662,12 +676,13 @@ class TrajectoryCollector:
             total_traj_uid = np.concatenate(all_traj_uid, axis=0)
             totoal_tool_callings = np.concatenate(all_tool_callings, axis=0)
 
-        elif self.config.algorithm.filter_groups.enable and is_train:
+        elif (self.config.algorithm.get("filter_groups") or {}).get("enable", False) and is_train:
             # Dynamic Sampling (for DAPO and Dynamic GiGPO)
             total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid, totoal_tool_callings = \
                 self.dynamic_multi_turn_loop(
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
+                rollout_generator=rollout_generator,
                 envs=envs,
             )
         else:
@@ -680,6 +695,7 @@ class TrajectoryCollector:
                 self.vanilla_multi_turn_loop(
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
+                rollout_generator=rollout_generator,
                 envs=envs,
                 uid_override=uid_override,
                 reset_info=reset_info,

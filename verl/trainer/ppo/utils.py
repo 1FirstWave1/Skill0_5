@@ -18,7 +18,6 @@ from enum import Enum
 from omegaconf import DictConfig
 
 from verl.single_controller.base import Worker
-from verl.trainer.ppo.core_algos import AdvantageEstimator
 
 WorkerType = type[Worker]
 
@@ -87,7 +86,7 @@ def need_critic(config: DictConfig) -> bool:
     """Given a config, do we need critic."""
     if config.critic.enable is not None:
         return bool(config.critic.enable)
-    elif config.algorithm.adv_estimator == AdvantageEstimator.GAE:
+    elif str(config.algorithm.adv_estimator).lower() == "gae":
         return True
     else:
         warnings.warn(
@@ -95,4 +94,3 @@ def need_critic(config: DictConfig) -> bool:
             stacklevel=2,
         )
         return False
-

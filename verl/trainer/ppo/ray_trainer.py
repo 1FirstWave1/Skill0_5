@@ -60,7 +60,7 @@ from verl.utils.metric import (
 from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
 from verl.utils.torch_functional import masked_mean
 from verl.utils.tracking import ValidationGenerationsLogger
-from verl.workers.rollout.async_server import AsyncLLMServerManager
+from verl.experimental.agent_loop import AgentLoopManager as AsyncLLMServerManager
 try:
     from gigpo import core_gigpo
 except ImportError:
@@ -871,6 +871,7 @@ class RayPPOTrainer:
             test_output_gen_batch = self.traj_collector.multi_turn_loop(
                                                     gen_batch=test_gen_batch,
                                                     actor_rollout_wg=self.actor_rollout_wg,
+                                                    rollout_generator=getattr(self, "async_rollout_manager", None),
                                                     envs=self.val_envs,
                                                     is_train=False,
                                                     )
@@ -1060,6 +1061,7 @@ class RayPPOTrainer:
             test_output_gen_batch = self.traj_collector.multi_turn_loop(
                 gen_batch=test_gen_batch,
                 actor_rollout_wg=self.actor_rollout_wg,
+                rollout_generator=getattr(self, "async_rollout_manager", None),
                 envs=self.val_envs_ood,
                 is_train=False,
             )
@@ -1437,7 +1439,7 @@ class RayPPOTrainer:
         if self.config.actor_rollout_ref.rollout.mode == "async":
             self.async_rollout_mode = True
             self.async_rollout_manager = AsyncLLMServerManager(
-                config=self.config.actor_rollout_ref,
+                config=self.config,
                 worker_group=self.actor_rollout_wg,
             )
 
@@ -1566,6 +1568,7 @@ class RayPPOTrainer:
             plain_output = self.traj_collector.multi_turn_loop(
                 gen_batch=gen_batch,
                 actor_rollout_wg=self.actor_rollout_wg,
+                rollout_generator=getattr(self, "async_rollout_manager", None),
                 envs=self.envs,
                 is_train=True,
             )
@@ -1733,6 +1736,7 @@ class RayPPOTrainer:
                 phase2_output = self.traj_collector.multi_turn_loop(
                     gen_batch=gen_batch,
                     actor_rollout_wg=self.actor_rollout_wg,
+                    rollout_generator=getattr(self, "async_rollout_manager", None),
                     envs=self.envs,
                     is_train=True,
                     reset_info=reset_info,
