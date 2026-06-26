@@ -47,17 +47,17 @@ class EngineConfig(BaseConfig):
     # whether the engine is forward only (e.g., ref policy)
     forward_only: bool = False
     # the strategy (backend)
-    strategy: str = None
+    strategy: Optional[str] = None
     # model dtype
     dtype: str = "bfloat16"  # ["bfloat16", "float16"]
     # whether to use dynamic bsz
     use_dynamic_bsz: bool = True
     # for training
-    max_token_len_per_gpu: int = None
-    micro_batch_size_per_gpu: int = None
+    max_token_len_per_gpu: Optional[int] = None
+    micro_batch_size_per_gpu: Optional[int] = None
     # for inference
-    infer_max_token_len_per_gpu: int = None
-    infer_micro_batch_size_per_gpu: int = None
+    infer_max_token_len_per_gpu: Optional[int] = None
+    infer_micro_batch_size_per_gpu: Optional[int] = None
     # whether use fuse lm head kernel
     use_fused_kernels: bool = False
     # TODO (this may conflict with the one in model config)
@@ -246,7 +246,7 @@ class VeOmniEngineConfig(EngineConfig):
     pipeline_parallel_size: int = 1
     context_parallel_size: int = 1
     ulysses_parallel_size: int = 1
-    data_parallel_mode: Literal["ddp", "fsdp1", "fsdp2"] = "fsdp"
+    data_parallel_mode: Literal["ddp", "fsdp", "fsdp1", "fsdp2"] = "fsdp"
     seed: int = 42
     full_determinism: bool = False
     mixed_precision: bool = False
@@ -269,9 +269,9 @@ class VeOmniEngineConfig(EngineConfig):
 
 @dataclass
 class TrainingWorkerConfig(BaseConfig):
-    model_type: str = None  # model type (language_model/value_model)
-    model_config: HFModelConfig = None
-    engine_config: EngineConfig = None
-    optimizer_config: OptimizerConfig = None
-    checkpoint_config: CheckpointConfig = None
-    profiler_config: ProfilerConfig = None
+    model_type: Optional[str] = None  # model type (language_model/value_model)
+    model_config: Optional[HFModelConfig] = None
+    engine_config: Optional[EngineConfig] = None
+    optimizer_config: Optional[OptimizerConfig] = None
+    checkpoint_config: Optional[CheckpointConfig] = None
+    profiler_config: Optional[ProfilerConfig] = None

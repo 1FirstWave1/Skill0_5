@@ -1,7 +1,6 @@
 set -x
 ENGINE=${1:-vllm}
 shift  # Remove first argument so $@ only contains extra params
-export VLLM_ATTENTION_BACKEND=FLASH_ATTN
 
 # ==================== WandB (optional) ====================
 # export WANDB_API_KEY="your_key_here"

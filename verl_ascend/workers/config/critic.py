@@ -83,7 +83,7 @@ class CriticConfig(BaseConfig):
     optim: OptimizerConfig = field(default_factory=OptimizerConfig)
     # deprecate model to favor model_config
     model: BaseModelConfig = field(default_factory=BaseModelConfig)
-    model_config: HFModelConfig = None
+    model_config: Optional[HFModelConfig] = None
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
     profiler: ProfilerConfig = field(default_factory=ProfilerConfig)
 
