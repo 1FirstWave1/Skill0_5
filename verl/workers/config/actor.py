@@ -152,6 +152,8 @@ class ActorConfig(BaseConfig):
     kl_loss_coef: float = 0.001
     kl_loss_type: str = "low_var_kl"
     ppo_epochs: int = 1
+    use_invalid_action_penalty: bool = True
+    invalid_action_penalty_coef: float = 0.0
     shuffle: bool = False
     data_loader_seed: int = 1
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
@@ -302,4 +304,3 @@ class FSDPActorConfig(ActorConfig):
                 raise ValueError(
                     "When using sequence parallelism for actor/ref policy, you must enable `use_remove_padding`."
                 )
-

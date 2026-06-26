@@ -27,6 +27,7 @@ When working with Megatron:
 """
 
 import getpass
+import inspect
 import logging
 import os
 from dataclasses import asdict
@@ -202,7 +203,11 @@ class vLLMAsyncRollout(BaseRollout):
                 # Will remove the patch after vllm support on-the-fly quant for rollout natively.
                 apply_vllm_fp8_patches()
 
-        self.inference_engine = WorkerWrapperBase(vllm_config=self.vllm_config)
+        worker_wrapper_args = inspect.signature(WorkerWrapperBase).parameters
+        if "vllm_config" in worker_wrapper_args:
+            self.inference_engine = WorkerWrapperBase(vllm_config=self.vllm_config)
+        else:
+            self.inference_engine = WorkerWrapperBase()
         self.inference_engine.init_worker(all_kwargs)
 
     def _load_model(self, *args, **kwargs):
@@ -291,4 +296,3 @@ class vLLMAsyncRollout(BaseRollout):
 
     def get_zeromq_address(self):
         return self.address
-
