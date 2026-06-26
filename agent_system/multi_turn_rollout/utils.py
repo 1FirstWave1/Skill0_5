@@ -19,7 +19,7 @@ import random
 from typing import List, Tuple, Dict
 import math
 from PIL import Image
-from verl_old import DataProto
+from verl import DataProto
 
 def to_list_of_dict(batch: DataProto) -> list[dict]:
     tensors = batch.batch

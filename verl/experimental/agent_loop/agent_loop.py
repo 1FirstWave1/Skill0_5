@@ -34,14 +34,14 @@ from transformers import AutoProcessor, AutoTokenizer
 from verl.experimental.agent_loop.prometheus_utils import update_prometheus_config
 from verl.experimental.agent_loop.utils import resolve_config_path
 from verl.experimental.reward_loop import RewardLoopWorker
-from verl_old.protocol import DataProto
-from verl_old.single_controller.ray.base import RayResourcePool, RayWorkerGroup
-from verl_old.utils import hf_processor, hf_tokenizer
+from verl.protocol import DataProto
+from verl.single_controller.ray.base import RayResourcePool, RayWorkerGroup
+from verl.utils import hf_processor, hf_tokenizer
 from verl.utils.chat_template import initialize_system_prompt
-from verl_old.utils.dataset.rl_dataset import RLHFDataset, get_dataset_class
-from verl_old.utils.fs import copy_to_local
-from verl_old.utils.model import compute_position_id_with_mask
-from verl_old.utils.ray_utils import get_event_loop
+from verl.utils.dataset.rl_dataset import RLHFDataset, get_dataset_class
+from verl.utils.fs import copy_to_local
+from verl.utils.model import compute_position_id_with_mask
+from verl.utils.ray_utils import get_event_loop
 from verl.utils.rollout_trace import (
     RolloutTraceConfig,
     rollout_trace_attr,
@@ -789,7 +789,7 @@ class AgentLoopWorkerBase:
         self,
     ):
         """Create a client for data system (TransferQueue)."""
-        from verl_old.single_controller.ray.base import get_random_string
+        from verl.single_controller.ray.base import get_random_string
         from verl.utils.transferqueue_utils import create_transferqueue_client
 
         client_name = get_random_string(length=6)

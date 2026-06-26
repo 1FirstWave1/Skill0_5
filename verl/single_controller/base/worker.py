@@ -22,7 +22,7 @@ from dataclasses import dataclass
 
 import ray
 
-from verl_old.utils.device import (
+from verl.utils.device import (
     get_torch_device,
     get_visible_devices_keyword,
     is_npu_available,
@@ -238,7 +238,7 @@ class Worker(WorkerHelper):
         return self.fused_worker_dict.get(worker_name, None)
 
     def _setup_env_cuda_visible_devices(self):
-        from verl_old.utils.ray_utils import ray_noset_visible_devices
+        from verl.utils.ray_utils import ray_noset_visible_devices
 
         is_ray_noset_visible_devices = ray_noset_visible_devices()
 

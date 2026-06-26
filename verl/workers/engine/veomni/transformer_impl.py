@@ -26,18 +26,18 @@ from veomni.distributed.torch_parallelize import build_parallelize_model
 from veomni.models.auto import build_foundation_model
 from veomni.optim import build_lr_scheduler, build_optimizer
 
-import verl_old.utils.torch_functional as verl_F
-from verl_old.trainer.config import CheckpointConfig
-from verl_old.utils import tensordict_utils as tu
-from verl_old.utils.checkpoint.fsdp_checkpoint_manager import FSDPCheckpointManager
-from verl_old.utils.device import (
+import verl.utils.torch_functional as verl_F
+from verl.trainer.config import CheckpointConfig
+from verl.utils import tensordict_utils as tu
+from verl.utils.checkpoint.fsdp_checkpoint_manager import FSDPCheckpointManager
+from verl.utils.device import (
     get_device_id,
 )
-from verl_old.utils.fsdp_utils import (
+from verl.utils.fsdp_utils import (
     fsdp_version,
 )
 from verl.workers.config import HFModelConfig, VeOmniEngineConfig, VeOmniOptimizerConfig
-from verl_old.workers.sharding_manager.fsdp_ulysses import FSDPUlyssesShardingManager
+from verl.workers.sharding_manager.fsdp_ulysses import FSDPUlyssesShardingManager
 
 from ..base import BaseEngineCtx, EngineRegistry
 from ..fsdp.transformer_impl import FSDPEngine, FSDPEngineWithLMHead

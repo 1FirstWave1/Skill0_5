@@ -41,7 +41,7 @@ def get_peft_cls(model_config, bridge, provider, dtype=None):
 
     lora_dtype = lora_cfg.get("dtype", dtype)
     if lora_dtype is not None:
-        from verl_old.utils.torch_dtypes import PrecisionType
+        from verl.utils.torch_dtypes import PrecisionType
 
         lora_dtype = PrecisionType.to_dtype(lora_dtype)
 

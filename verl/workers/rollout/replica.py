@@ -22,9 +22,9 @@ from omegaconf import DictConfig
 from pydantic import BaseModel
 from ray.actor import ActorHandle
 
-from verl_old.single_controller.ray import RayClassWithInitArgs, RayWorkerGroup
-from verl_old.trainer.ppo.ray_trainer import RayResourcePool, ResourcePoolManager
-from verl_old.utils.config import omega_conf_to_dataclass
+from verl.single_controller.ray import RayClassWithInitArgs, RayWorkerGroup
+from verl.trainer.ppo.ray_trainer import RayResourcePool, ResourcePoolManager
+from verl.utils.config import omega_conf_to_dataclass
 from verl.workers.config import HFModelConfig, RolloutConfig
 
 logger = logging.getLogger(__file__)
@@ -228,7 +228,7 @@ class RolloutReplicaRegistry:
 
 # Loader functions for built-in types
 def _load_vllm():
-    from verl_old.workers.rollout.vllm_rollout.vllm_async_server import vLLMReplica
+    from verl.workers.rollout.vllm_rollout.vllm_async_server import vLLMReplica
 
     return vLLMReplica
 
@@ -271,7 +271,7 @@ def _load_sglang():
         sys.modules["vllm.model_executor.layers"] = mock_layers
         sys.modules["vllm.model_executor.layers.activation"] = mock_activation
 
-    from verl_old.workers.rollout.sglang_rollout.async_sglang_server import SGLangReplica
+    from verl.workers.rollout.sglang_rollout.async_sglang_server import SGLangReplica
 
     del os.environ["SGLANG_USE_CPU_ENGINE"]
     return SGLangReplica

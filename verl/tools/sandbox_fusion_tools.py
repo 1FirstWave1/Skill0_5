@@ -22,8 +22,8 @@ from uuid import uuid4
 
 import ray
 
-from verl_old.tools.base_tool import BaseTool
-from verl_old.utils.reward_score.sandbox_fusion.utils import _process_single_case
+from verl.tools.base_tool import BaseTool
+from verl.utils.reward_score.sandbox_fusion.utils import _process_single_case
 from verl.utils.rollout_trace import rollout_trace_op
 
 from .schemas import OpenAIFunctionToolSchema, ToolResponse

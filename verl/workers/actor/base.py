@@ -19,7 +19,7 @@ from abc import ABC, abstractmethod
 
 import torch
 
-from verl_old import DataProto
+from verl import DataProto
 
 __all__ = ["BasePPOActor"]
 

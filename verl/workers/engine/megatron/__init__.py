@@ -16,7 +16,7 @@
 # HACK Avoid cpu worker trigger cuda jit error
 import os
 
-from verl_old.utils.device import is_cuda_available
+from verl.utils.device import is_cuda_available
 
 if not is_cuda_available and "TORCH_CUDA_ARCH_LIST" not in os.environ:
     os.environ["TORCH_CUDA_ARCH_LIST"] = "8.0"

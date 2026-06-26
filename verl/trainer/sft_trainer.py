@@ -31,14 +31,14 @@ from torch.utils.data import DistributedSampler
 from torchdata.stateful_dataloader import StatefulDataLoader
 from tqdm import tqdm
 
-from verl_old.utils import tensordict_utils as tu
-from verl_old.utils.checkpoint import CheckpointHandler
+from verl.utils import tensordict_utils as tu
+from verl.utils.checkpoint import CheckpointHandler
 from verl.utils.dataset.dataset_utils import SFTTensorCollator
-from verl_old.utils.dataset.multiturn_sft_dataset import MultiTurnSFTDataset
-from verl_old.utils.device import get_device_name
-from verl_old.utils.distributed import destroy_global_process_group
-from verl_old.utils.logger import log_with_rank
-from verl_old.utils.tracking import Tracking
+from verl.utils.dataset.multiturn_sft_dataset import MultiTurnSFTDataset
+from verl.utils.device import get_device_name
+from verl.utils.distributed import destroy_global_process_group
+from verl.utils.logger import log_with_rank
+from verl.utils.tracking import Tracking
 from verl.workers.engine_workers import TrainingWorker
 
 logger = logging.getLogger(__file__)
@@ -90,7 +90,7 @@ class SFTTrainer:
         )
 
     def _build_config(self):
-        from verl_old.utils.config import omega_conf_to_dataclass
+        from verl.utils.config import omega_conf_to_dataclass
 
         self.model_config = omega_conf_to_dataclass(self.config.model)
         self.engine_config = omega_conf_to_dataclass(self.config.engine)
@@ -383,7 +383,7 @@ class SFTTrainer:
 
 
 def run_sft(config):
-    from verl_old.utils.distributed import initialize_global_process_group
+    from verl.utils.distributed import initialize_global_process_group
 
     initialize_global_process_group()
     trainer = SFTTrainer(config=config)
@@ -401,7 +401,7 @@ def create_sft_dataset(data_paths, data_config, tokenizer, processor, max_sample
     # build dataset
     # First check if a custom dataset class is specified
     if data_config.custom_cls.get("path", None):
-        from verl_old.utils.import_utils import load_extern_object
+        from verl.utils.import_utils import load_extern_object
 
         dataset_cls = load_extern_object(data_config.custom_cls.path, data_config.custom_cls.name)
     else:

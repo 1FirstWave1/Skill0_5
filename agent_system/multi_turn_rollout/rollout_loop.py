@@ -15,16 +15,16 @@
 
 import torch
 import numpy as np
-from verl_old import DataProto
-from verl_old.utils.dataset.rl_dataset import collate_fn
-from verl_old.utils.model import compute_position_id_with_mask
-import verl_old.utils.torch_functional as verl_F
+from verl import DataProto
+from verl.utils.dataset.rl_dataset import collate_fn
+from verl.utils.model import compute_position_id_with_mask
+import verl.utils.torch_functional as verl_F
 from transformers import PreTrainedTokenizer
 import uuid
 from agent_system.multi_turn_rollout.utils import process_image, to_list_of_dict, torch_to_numpy, filter_group_data
 from agent_system.environments import EnvironmentManagerBase
 from typing import List, Dict
-from verl_old.protocol import pad_dataproto_to_divisor, unpad_dataproto
+from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto
 
 class TrajectoryCollector:
     def __init__(self, config, tokenizer: PreTrainedTokenizer, processor=None):
@@ -141,9 +141,9 @@ class TrajectoryCollector:
         if is_multi_modal:
 
             if "Qwen3VLProcessor" in self.processor.__class__.__name__:
-                from verl_old.models.transformers.qwen3_vl import get_rope_index
+                from verl.models.transformers.qwen3_vl import get_rope_index
             else:
-                from verl_old.models.transformers.qwen2_vl import get_rope_index
+                from verl.models.transformers.qwen2_vl import get_rope_index
 
             vision_position_ids = get_rope_index(
                 self.processor,
@@ -434,7 +434,7 @@ class TrajectoryCollector:
 
                 # Build response attention mask and position_ids (same logic as vllm_rollout_spmd)
                 eos_token_id = gen_batch.meta_info.get("eos_token_id", self.tokenizer.eos_token_id)
-                from verl_old.utils.torch_functional import get_response_mask
+                from verl.utils.torch_functional import get_response_mask
                 resp_attn_mask = get_response_mask(response_id=responses, eos_token=eos_token_id, dtype=plain_mask.dtype)
 
                 resp_length = responses.size(1)

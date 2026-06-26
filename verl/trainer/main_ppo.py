@@ -23,13 +23,13 @@ import ray
 from omegaconf import OmegaConf
 
 from verl.experimental.dataset.sampler import AbstractSampler
-from verl_old.trainer.constants_ppo import get_ppo_ray_runtime_env
-from verl_old.trainer.ppo.ray_trainer import RayPPOTrainer
-from verl_old.trainer.ppo.reward import load_reward_manager
+from verl.trainer.constants_ppo import get_ppo_ray_runtime_env
+from verl.trainer.ppo.ray_trainer import RayPPOTrainer
+from verl.trainer.ppo.reward import load_reward_manager
 from verl.trainer.ppo.utils import need_critic, need_reference_policy
-from verl_old.utils.config import validate_config
-from verl_old.utils.device import auto_set_device, is_cuda_available
-from verl_old.utils.import_utils import load_extern_object
+from verl.utils.config import validate_config
+from verl.utils.device import auto_set_device, is_cuda_available
+from verl.utils.import_utils import load_extern_object
 
 
 @hydra.main(config_path="config", config_name="ppo_trainer", version_base=None)
@@ -87,7 +87,7 @@ def run_ppo(config, task_runner_class=None) -> None:
         and config.global_profiler.get("steps") is not None
         and len(config.global_profiler.get("steps", [])) > 0
     ):
-        from verl_old.utils.import_utils import is_nvtx_available
+        from verl.utils.import_utils import is_nvtx_available
 
         assert is_nvtx_available(), "nvtx is not available in CUDA platform. Please 'pip3 install nvtx'"
         nsight_options = OmegaConf.to_container(
@@ -122,8 +122,8 @@ class TaskRunner:
 
     def add_actor_rollout_worker(self, config):
         """Add actor rollout worker based on the actor strategy."""
-        from verl_old.single_controller.ray import RayWorkerGroup
-        from verl_old.trainer.ppo.ray_trainer import Role
+        from verl.single_controller.ray import RayWorkerGroup
+        from verl.trainer.ppo.ray_trainer import Role
 
         use_legacy_worker_impl = config.trainer.get("use_legacy_worker_impl", "auto")
 
@@ -146,13 +146,13 @@ class TaskRunner:
         # Note: sync mode validation is now handled in RolloutConfig.__post_init__
         # Always use async worker since sync mode is deprecated and rejected
         if config.actor_rollout_ref.actor.strategy in {"fsdp", "fsdp2"}:
-            from verl_old.workers.fsdp_workers import AsyncActorRolloutRefWorker
+            from verl.workers.fsdp_workers import AsyncActorRolloutRefWorker
 
             actor_rollout_cls = AsyncActorRolloutRefWorker
             ray_worker_group_cls = RayWorkerGroup
 
         elif config.actor_rollout_ref.actor.strategy == "megatron":
-            from verl_old.workers.megatron_workers import AsyncActorRolloutRefWorker
+            from verl.workers.megatron_workers import AsyncActorRolloutRefWorker
 
             actor_rollout_cls = AsyncActorRolloutRefWorker
             ray_worker_group_cls = RayWorkerGroup
@@ -169,7 +169,7 @@ class TaskRunner:
         use_legacy_worker_impl = config.trainer.get("use_legacy_worker_impl", "auto")
         if config.critic.strategy in {"fsdp", "fsdp2"}:
             if use_legacy_worker_impl in ["auto", "enable"]:
-                from verl_old.workers.fsdp_workers import CriticWorker
+                from verl.workers.fsdp_workers import CriticWorker
             elif use_legacy_worker_impl == "disable":
                 # we don't need to specialize critic worker. Just use TrainingWorker
                 from verl.workers.engine_workers import TrainingWorker
@@ -181,12 +181,12 @@ class TaskRunner:
 
         elif config.critic.strategy == "megatron":
             # TODO: switch this to TrainingWorker as well
-            from verl_old.workers.megatron_workers import CriticWorker
+            from verl.workers.megatron_workers import CriticWorker
 
         else:
             raise NotImplementedError
 
-        from verl_old.trainer.ppo.ray_trainer import Role
+        from verl.trainer.ppo.ray_trainer import Role
 
         self.role_worker_mapping[Role.Critic] = ray.remote(CriticWorker)
         self.mapping[Role.Critic] = "global_pool"
@@ -208,22 +208,22 @@ class TaskRunner:
             reward_pool = [config.reward_model.n_gpus_per_node] * config.reward_model.nnodes
             resource_pool_spec["reward_pool"] = reward_pool
 
-        from verl_old.trainer.ppo.ray_trainer import ResourcePoolManager
+        from verl.trainer.ppo.ray_trainer import ResourcePoolManager
 
         resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=self.mapping)
         return resource_pool_manager
 
     def add_reward_model_worker(self, config):
         """Add reward model worker if enabled."""
-        from verl_old.trainer.ppo.ray_trainer import Role
+        from verl.trainer.ppo.ray_trainer import Role
 
         if config.reward_model.enable:
             use_legacy_worker_impl = config.trainer.get("use_legacy_worker_impl", "auto")
             if use_legacy_worker_impl in ["auto", "enable", "disable"]:
                 if config.reward_model.strategy in {"fsdp", "fsdp2"}:
-                    from verl_old.workers.fsdp_workers import RewardModelWorker
+                    from verl.workers.fsdp_workers import RewardModelWorker
                 elif config.reward_model.strategy == "megatron":
-                    from verl_old.workers.megatron_workers import RewardModelWorker
+                    from verl.workers.megatron_workers import RewardModelWorker
                 else:
                     raise NotImplementedError
             # elif use_legacy_worker_impl == "disable":
@@ -241,7 +241,7 @@ class TaskRunner:
 
     def add_ref_policy_worker(self, config, ref_policy_cls):
         """Add reference policy worker if KL loss or KL reward is used."""
-        from verl_old.trainer.ppo.ray_trainer import Role
+        from verl.trainer.ppo.ray_trainer import Role
 
         # Ref policy has been fused into ActorRolloutRefWorker in new model engine,
         # we don't need to add a separate ref policy worker group.
@@ -268,7 +268,7 @@ class TaskRunner:
 
         from omegaconf import OmegaConf
 
-        from verl_old.utils.fs import copy_to_local
+        from verl.utils.fs import copy_to_local
 
         print(f"TaskRunner hostname: {socket.gethostname()}, PID: {os.getpid()}")
         pprint(OmegaConf.to_container(config, resolve=True))
@@ -302,7 +302,7 @@ class TaskRunner:
         )
 
         # Instantiate the tokenizer and processor.
-        from verl_old.utils import hf_processor, hf_tokenizer
+        from verl.utils import hf_processor, hf_tokenizer
 
         trust_remote_code = config.data.get("trust_remote_code", False)
         tokenizer = hf_tokenizer(local_path, trust_remote_code=trust_remote_code)
@@ -319,7 +319,7 @@ class TaskRunner:
 
         resource_pool_manager = self.init_resource_pool_mgr(config)
 
-        from verl_old.utils.dataset.rl_dataset import collate_fn
+        from verl.utils.dataset.rl_dataset import collate_fn
 
         # Create training and validation datasets.
         train_dataset = create_rl_dataset(
@@ -375,7 +375,7 @@ def create_rl_dataset(data_paths, data_config, tokenizer, processor, is_train=Tr
         dataset (Dataset): The dataset.
     """
 
-    from verl_old.utils.dataset.rl_dataset import get_dataset_class
+    from verl.utils.dataset.rl_dataset import get_dataset_class
 
     # Get the dataset class
     dataset_cls = get_dataset_class(data_config)

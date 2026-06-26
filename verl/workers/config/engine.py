@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Optional
 
 from verl.base_config import BaseConfig
-from verl_old.trainer.config import CheckpointConfig
+from verl.trainer.config import CheckpointConfig
 
 from ...utils.profiler import ProfilerConfig
 from .model import HFModelConfig

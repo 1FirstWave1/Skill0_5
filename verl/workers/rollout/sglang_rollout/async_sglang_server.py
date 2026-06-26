@@ -39,11 +39,11 @@ from sglang.srt.managers.io_struct import (
 )
 from sglang.srt.managers.tokenizer_manager import ServerStatus
 
-from verl_old.single_controller.ray import RayClassWithInitArgs
-from verl_old.utils.config import omega_conf_to_dataclass
+from verl.single_controller.ray import RayClassWithInitArgs
+from verl.utils.config import omega_conf_to_dataclass
 from verl.workers.config import HFModelConfig, RolloutConfig
 from verl.workers.rollout.replica import RolloutMode, RolloutReplica, TokenOutput
-from verl_old.workers.rollout.sglang_rollout.sglang_rollout import ServerAdapter, _set_envs_and_config
+from verl.workers.rollout.sglang_rollout.sglang_rollout import ServerAdapter, _set_envs_and_config
 from verl.workers.rollout.utils import get_free_port, is_valid_ipv6_address, run_unvicorn
 
 logger = logging.getLogger(__file__)

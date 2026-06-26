@@ -20,7 +20,7 @@ from datetime import timedelta
 import ray
 import torch.distributed
 
-from verl_old.utils.device import get_device_name, get_nccl_backend, get_torch_device, is_npu_available
+from verl.utils.device import get_device_name, get_nccl_backend, get_torch_device, is_npu_available
 
 
 def set_numa_affinity():

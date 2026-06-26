@@ -14,7 +14,7 @@
 
 import torch
 
-from verl_old.utils.device import get_device_id
+from verl.utils.device import get_device_id
 
 
 class MemoryBuffer:

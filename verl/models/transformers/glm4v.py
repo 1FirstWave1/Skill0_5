@@ -29,8 +29,8 @@ from transformers.models.glm4v.modeling_glm4v import (
 )
 from transformers.utils import is_flash_attn_2_available, is_flash_attn_greater_or_equal_2_10
 
-from verl_old.utils.device import is_npu_available
-from verl_old.utils.ulysses import (
+from verl.utils.device import is_npu_available
+from verl.utils.ulysses import (
     gather_heads_scatter_seq,
     gather_seq_scatter_heads,
     get_ulysses_sequence_parallel_group,
@@ -472,7 +472,7 @@ def forward_with_torch_backend(
     temperature: float = 1.0,
     **kwargs,
 ) -> tuple | Glm4vCausalLMOutputForPPO:
-    from verl_old.utils.experimental.torch_functional import FusedLinearForPPO
+    from verl.utils.experimental.torch_functional import FusedLinearForPPO
 
     outputs = glm4v_forward(self, input_ids, **kwargs)
     hidden_states = outputs[0]

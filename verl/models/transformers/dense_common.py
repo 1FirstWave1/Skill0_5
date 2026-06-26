@@ -85,7 +85,7 @@ def forward_with_torch_backend(
     temperature: float = 1.0,
     **loss_kwargs,
 ) -> tuple | CausalLMOutputForPPO:
-    from verl_old.utils.experimental.torch_functional import FusedLinearForPPO
+    from verl.utils.experimental.torch_functional import FusedLinearForPPO
 
     outputs = forward_base_model(
         self,

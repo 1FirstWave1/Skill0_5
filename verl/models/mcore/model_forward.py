@@ -16,7 +16,7 @@
 
 import torch
 
-from verl_old.utils.megatron_utils import unwrap_model
+from verl.utils.megatron_utils import unwrap_model
 
 from .util import (
     postprocess_bshd,

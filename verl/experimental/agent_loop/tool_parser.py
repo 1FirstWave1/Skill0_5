@@ -19,7 +19,7 @@ from abc import ABC, abstractmethod
 import regex
 from pydantic import BaseModel
 
-from verl_old.utils.ray_utils import get_event_loop
+from verl.utils.ray_utils import get_event_loop
 from verl.utils.rollout_trace import rollout_trace_op
 
 logger = logging.getLogger(__file__)

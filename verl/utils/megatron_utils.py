@@ -35,11 +35,11 @@ from megatron.core.transformer.module import Float16Module
 from megatron.core.utils import get_attr_wrapped_model
 from transformers import PretrainedConfig
 
-import verl_old.utils.megatron.tensor_parallel as tp_utils
-from verl_old.utils.device import get_device_id, get_device_name, get_torch_device
-from verl_old.utils.fs import local_mkdir_safe
-from verl_old.utils.model import normalize_model_name
-from verl_old.utils.torch_dtypes import PrecisionType
+import verl.utils.megatron.tensor_parallel as tp_utils
+from verl.utils.device import get_device_id, get_device_name, get_torch_device
+from verl.utils.fs import local_mkdir_safe
+from verl.utils.model import normalize_model_name
+from verl.utils.torch_dtypes import PrecisionType
 
 
 def get_model_config(model):
@@ -277,7 +277,7 @@ def make_megatron_module(
     else:
 
         def megatron_model_provider(pre_process, post_process, vp_stage=None):
-            from verl_old.models.mcore import init_mcore_model
+            from verl.models.mcore import init_mcore_model
 
             parallel_model = init_mcore_model(
                 tf_config,

@@ -22,7 +22,7 @@ from enum import Enum
 
 from omegaconf import OmegaConf
 
-from verl_old.tools.schemas import OpenAIFunctionToolSchema
+from verl.tools.schemas import OpenAIFunctionToolSchema
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))

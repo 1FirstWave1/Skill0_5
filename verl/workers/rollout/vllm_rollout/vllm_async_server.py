@@ -43,13 +43,13 @@ from vllm.v1.engine.core import EngineCoreProc
 from vllm.v1.engine.utils import CoreEngineProcManager
 from vllm.v1.executor.abstract import Executor
 
-from verl_old.single_controller.ray import RayClassWithInitArgs
-from verl_old.utils.config import omega_conf_to_dataclass
+from verl.single_controller.ray import RayClassWithInitArgs
+from verl.utils.config import omega_conf_to_dataclass
 from verl.utils.vllm.vllm_fp8_utils import apply_vllm_fp8_patches
 from verl.workers.config import HFModelConfig, RolloutConfig
 from verl.workers.rollout.replica import RolloutMode, RolloutReplica, TokenOutput
 from verl.workers.rollout.utils import get_free_port, is_valid_ipv6_address, run_unvicorn
-from verl_old.workers.rollout.vllm_rollout import vLLMAsyncRollout
+from verl.workers.rollout.vllm_rollout import vLLMAsyncRollout
 from verl.workers.rollout.vllm_rollout.utils import (
     VLLM_LORA_INT_ID,
     VLLM_LORA_NAME,
@@ -261,7 +261,7 @@ class vLLMHttpServerBase:
 
         logger.info(f"enable_sleep_mode: {self.config.enable_sleep_mode}")
         if not self.config.enable_sleep_mode:
-            from verl_old.utils.device import set_expandable_segments
+            from verl.utils.device import set_expandable_segments
 
             set_expandable_segments(True)
 

@@ -23,11 +23,11 @@ import torch
 from omegaconf import DictConfig
 from tensordict import TensorDict
 
-from verl_old.protocol import DataProto
-from verl_old.single_controller.ray.base import RayResourcePool
-from verl_old.trainer.ppo.reward import get_custom_reward_fn
-from verl_old.utils import hf_tokenizer
-from verl_old.utils.fs import copy_to_local
+from verl.protocol import DataProto
+from verl.single_controller.ray.base import RayResourcePool
+from verl.trainer.ppo.reward import get_custom_reward_fn
+from verl.utils import hf_tokenizer
+from verl.utils.fs import copy_to_local
 
 from .reward_manager import get_reward_manager_cls
 from .reward_model import RewardModelManager
@@ -79,7 +79,7 @@ class RewardLoopWorker:
             reward_manager_cls = get_reward_manager_cls(self.config.reward_model.reward_manager)
         elif reward_loop_source == "importlib":
             # Load from external module using importlib
-            from verl_old.utils.import_utils import load_extern_object
+            from verl.utils.import_utils import load_extern_object
 
             reward_loop_module_path = self.config.reward_model.get("reward_loop_module_path", None)
             reward_loop_class_name = self.config.reward_model.get("reward_loop_class_name", None)

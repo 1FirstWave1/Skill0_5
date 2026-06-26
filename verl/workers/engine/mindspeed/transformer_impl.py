@@ -20,7 +20,7 @@ try:
 except ImportError:
     repatch = None
 
-from verl_old.trainer.config import CheckpointConfig
+from verl.trainer.config import CheckpointConfig
 from verl.workers.config import HFModelConfig, McoreEngineConfig, McoreOptimizerConfig
 
 from ..base import EngineRegistry

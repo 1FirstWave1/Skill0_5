@@ -30,19 +30,19 @@ from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp.api import FullStateDictConfig, ShardedStateDictConfig, StateDictType
 from torch.distributed.tensor import DTensor
 
-import verl_old.utils.torch_functional as verl_F
-from verl_old.models.transformers.monkey_patch import apply_monkey_patch
-from verl_old.trainer.config import CheckpointConfig
-from verl_old.utils import tensordict_utils as tu
-from verl_old.utils.activation_offload import enable_activation_offloading
-from verl_old.utils.checkpoint.fsdp_checkpoint_manager import FSDPCheckpointManager
+import verl.utils.torch_functional as verl_F
+from verl.models.transformers.monkey_patch import apply_monkey_patch
+from verl.trainer.config import CheckpointConfig
+from verl.utils import tensordict_utils as tu
+from verl.utils.activation_offload import enable_activation_offloading
+from verl.utils.checkpoint.fsdp_checkpoint_manager import FSDPCheckpointManager
 from verl.utils.dataset.dataset_utils import DatasetPadMode
-from verl_old.utils.debug import log_gpu_memory_usage
-from verl_old.utils.device import (
+from verl.utils.debug import log_gpu_memory_usage
+from verl.utils.device import (
     get_device_id,
     get_device_name,
 )
-from verl_old.utils.fsdp_utils import (
+from verl.utils.fsdp_utils import (
     CPUOffloadPolicy,
     FSDPModule,
     MixedPrecisionPolicy,
@@ -60,12 +60,12 @@ from verl_old.utils.fsdp_utils import (
     offload_fsdp_optimizer,
     replace_lora_wrapper,
 )
-from verl_old.utils.model import convert_weight_keys, extract_multi_modal_inputs
-from verl_old.utils.py_functional import convert_to_regular_types
-from verl_old.utils.torch_functional import logprobs_from_logits
-from verl_old.utils.ulysses import gather_outputs_and_unpad, ulysses_pad, ulysses_pad_and_slice_inputs
+from verl.utils.model import convert_weight_keys, extract_multi_modal_inputs
+from verl.utils.py_functional import convert_to_regular_types
+from verl.utils.torch_functional import logprobs_from_logits
+from verl.utils.ulysses import gather_outputs_and_unpad, ulysses_pad, ulysses_pad_and_slice_inputs
 from verl.workers.config import FSDPEngineConfig, FSDPOptimizerConfig, HFModelConfig
-from verl_old.workers.sharding_manager.fsdp_ulysses import FSDPUlyssesShardingManager
+from verl.workers.sharding_manager.fsdp_ulysses import FSDPUlyssesShardingManager
 
 from ..base import BaseEngine, BaseEngineCtx, EngineRegistry
 from ..utils import enable_full_determinism, postprocess_batch_func, prepare_micro_batches
@@ -195,8 +195,8 @@ class FSDPEngine(BaseEngine):
         self.use_ulysses_sp = self.ulysses_sequence_parallel_size > 1
 
     def _build_module(self):
-        from verl_old.utils.model import get_hf_auto_model_class
-        from verl_old.utils.torch_dtypes import PrecisionType
+        from verl.utils.model import get_hf_auto_model_class
+        from verl.utils.torch_dtypes import PrecisionType
 
         torch_dtype = self.engine_config.model_dtype
 
@@ -257,7 +257,7 @@ class FSDPEngine(BaseEngine):
         if lora_adapter_path is not None:
             from peft import PeftModel
 
-            from verl_old.utils.fs import copy_to_local
+            from verl.utils.fs import copy_to_local
 
             print(f"Loading pre-trained LoRA adapter to from: {lora_adapter_path}")
             # Copy adapter to local if needed
@@ -286,7 +286,7 @@ class FSDPEngine(BaseEngine):
         # TODO(ziheng): need to improve
         from torch.distributed.fsdp import CPUOffload, MixedPrecision
 
-        from verl_old.utils.torch_dtypes import PrecisionType
+        from verl.utils.torch_dtypes import PrecisionType
 
         mixed_precision_config = self.engine_config.mixed_precision
         if mixed_precision_config is not None:
@@ -390,7 +390,7 @@ class FSDPEngine(BaseEngine):
         return optimizer
 
     def _build_lr_scheduler(self, optimizer):
-        from verl_old.utils.torch_functional import get_constant_schedule_with_warmup, get_cosine_schedule_with_warmup
+        from verl.utils.torch_functional import get_constant_schedule_with_warmup, get_cosine_schedule_with_warmup
 
         optim_config = self.optimizer_config
 
@@ -421,7 +421,7 @@ class FSDPEngine(BaseEngine):
         return lr_scheduler
 
     def _build_model_optimizer(self):
-        from verl_old.utils.model import print_model_size
+        from verl.utils.model import print_model_size
 
         # Load base model with specified configuration and dtype
         module = self._build_module()

@@ -33,10 +33,10 @@ from openai import AsyncOpenAI
 from openai.types.chat.chat_completion import ChatCompletion
 from starlette.requests import Request
 
-from verl_old.protocol import DataProto
-from verl_old.single_controller.ray.base import RayWorkerGroup
-from verl_old.utils import hf_tokenizer
-from verl_old.utils.fs import copy_to_local
+from verl.protocol import DataProto
+from verl.single_controller.ray.base import RayWorkerGroup
+from verl.utils import hf_tokenizer
+from verl.utils.fs import copy_to_local
 
 logger = logging.getLogger(__file__)
 
@@ -345,11 +345,11 @@ def async_server_class(rollout_backend: str) -> Type[AsyncServerBase]:
         Type[AsyncServerBase]: async server class.
     """
     if rollout_backend == "vllm":
-        from verl_old.workers.rollout.vllm_rollout.vllm_async_server import AsyncvLLMServer
+        from verl.workers.rollout.vllm_rollout.vllm_async_server import AsyncvLLMServer
 
         return AsyncvLLMServer
     elif rollout_backend == "sglang":
-        from verl_old.workers.rollout.sglang_rollout.async_sglang_server import AsyncSglangServer
+        from verl.workers.rollout.sglang_rollout.async_sglang_server import AsyncSglangServer
 
         return AsyncSglangServer
     else:

@@ -22,10 +22,10 @@ from enum import Enum
 
 import torch
 
-import verl_old.utils.hdfs_io as hdfs_io
-from verl_old.single_controller import WorkerGroup
-from verl_old.utils.checkpoint.checkpoint_manager import find_latest_ckpt_path, get_checkpoint_tracker_filename
-from verl_old.utils.logger import log_with_rank
+import verl.utils.hdfs_io as hdfs_io
+from verl.single_controller import WorkerGroup
+from verl.utils.checkpoint.checkpoint_manager import find_latest_ckpt_path, get_checkpoint_tracker_filename
+from verl.utils.logger import log_with_rank
 from verl.workers.engine import BaseEngine
 
 
@@ -86,7 +86,7 @@ class CheckpointHandler:
 
     def save_checkpoint(self, step):
         """Save checkpoint using FSDPCheckpointManager with improved tracking"""
-        from verl_old.utils.fs import local_mkdir_safe
+        from verl.utils.fs import local_mkdir_safe
 
         # Determine checkpoint path
         local_global_step_folder = os.path.join(self.default_local_dir, f"global_step_{step}")

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from verl_old.models.transformers.monkey_patch import apply_monkey_patch
+from verl.models.transformers.monkey_patch import apply_monkey_patch
 from verl.models.transformers.tiled_mlp import apply_tiled_mlp_monkey_patch
 
 __all__ = [

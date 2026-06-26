@@ -43,7 +43,7 @@ from filelock import FileLock
 from torch.distributed.device_mesh import DeviceMesh
 from vllm.config import LoRAConfig
 
-from verl_old.utils.ray_utils import get_event_loop
+from verl.utils.ray_utils import get_event_loop
 
 try:
     from vllm.worker.worker_base import WorkerWrapperBase
@@ -53,15 +53,15 @@ except ModuleNotFoundError:
 
 from packaging import version as vs
 
-from verl_old import DataProto
-from verl_old.third_party.vllm import VLLM_SLEEP_LEVEL, get_version
-from verl_old.utils.device import is_npu_available
-from verl_old.utils.distributed import initialize_global_process_group_ray
-from verl_old.utils.ray_utils import ray_noset_visible_devices
+from verl import DataProto
+from verl.third_party.vllm import VLLM_SLEEP_LEVEL, get_version
+from verl.utils.device import is_npu_available
+from verl.utils.distributed import initialize_global_process_group_ray
+from verl.utils.ray_utils import ray_noset_visible_devices
 from verl.utils.vllm import TensorLoRARequest, VLLMHijack, is_version_ge
 from verl.utils.vllm.vllm_fp8_utils import apply_vllm_fp8_patches, is_fp8_model, load_quanted_weights
 from verl.workers.config import HFModelConfig, RolloutConfig
-from verl_old.workers.rollout.base import BaseRollout
+from verl.workers.rollout.base import BaseRollout
 from verl.workers.rollout.utils import get_free_port, is_valid_ipv6_address
 from verl.workers.rollout.vllm_rollout.utils import (
     VLLM_LORA_INT_ID,

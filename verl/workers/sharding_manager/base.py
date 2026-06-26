@@ -15,7 +15,7 @@
 Sharding manager to implement HybridEngine
 """
 
-from verl_old import DataProto
+from verl import DataProto
 
 
 class BaseShardingManager:

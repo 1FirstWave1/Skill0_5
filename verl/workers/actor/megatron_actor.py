@@ -36,10 +36,10 @@ from megatron.core.pipeline_parallel import get_forward_backward_func
 from omegaconf import OmegaConf
 from torch import nn
 
-from verl_old import DataProto
-from verl_old.trainer.ppo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
-from verl_old.utils.device import get_device_id, get_torch_device
-from verl_old.utils.megatron.pipeline_parallel import make_batch_generator
+from verl import DataProto
+from verl.trainer.ppo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
+from verl.utils.device import get_device_id, get_torch_device
+from verl.utils.megatron.pipeline_parallel import make_batch_generator
 from verl.utils.megatron.router_replay_patch import RouterReplay, RouterReplayAction
 from verl.utils.megatron.router_replay_utils import (
     RouterReplayHelper,
@@ -48,14 +48,14 @@ from verl.utils.megatron.router_replay_utils import (
     reorder_and_merge_vpp_layers,
     set_router_replay_data,
 )
-from verl_old.utils.megatron.tensor_parallel import vocab_parallel_entropy, vocab_parallel_log_probs_from_logits
-from verl_old.utils.megatron_utils import get_model_config, unwrap_model
+from verl.utils.megatron.tensor_parallel import vocab_parallel_entropy, vocab_parallel_log_probs_from_logits
+from verl.utils.megatron_utils import get_model_config, unwrap_model
 from verl.utils.profiler import GPUMemoryLogger
 from verl.utils.profiler.profile import Profiler
-from verl_old.utils.py_functional import append_to_dict
-from verl_old.utils.seqlen_balancing import get_reverse_idx, rearrange_micro_batches
-from verl_old.utils.torch_functional import broadcast_dict_tensor
-from verl_old.workers.actor import BasePPOActor
+from verl.utils.py_functional import append_to_dict
+from verl.utils.seqlen_balancing import get_reverse_idx, rearrange_micro_batches
+from verl.utils.torch_functional import broadcast_dict_tensor
+from verl.workers.actor import BasePPOActor
 
 __all__ = ["MegatronPPOActor"]
 
@@ -583,7 +583,7 @@ class MegatronPPOActor(BasePPOActor):
 
             multi_modal_inputs = {}
             if "multi_modal_inputs" in batch:
-                from verl_old.utils.model import extract_multi_modal_inputs
+                from verl.utils.model import extract_multi_modal_inputs
 
                 indices = batch.get("multi_modal_inputs_idx", None)
                 multi_modal_inputs = extract_multi_modal_inputs(batch["multi_modal_inputs"], indices)
@@ -604,7 +604,7 @@ class MegatronPPOActor(BasePPOActor):
                 layers_topk_idx = batch["routed_experts"]
                 set_router_replay_data(layers_topk_idx, attention_mask, self.tf_config, vp_rank)
 
-            from verl_old.models.mcore import get_mcore_forward_fn, get_mcore_forward_fused_fn
+            from verl.models.mcore import get_mcore_forward_fn, get_mcore_forward_fused_fn
 
             if self.use_fused_kernels:
                 forward_fn = get_mcore_forward_fused_fn(self.hf_config)

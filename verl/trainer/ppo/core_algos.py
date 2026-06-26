@@ -25,7 +25,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-import verl_old.utils.torch_functional as verl_F
+import verl.utils.torch_functional as verl_F
 
 
 class AdaptiveKLController:

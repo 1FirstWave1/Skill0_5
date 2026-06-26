@@ -29,10 +29,10 @@ from megatron.core.utils import deprecate_inference_params
 from packaging import version
 from torch import Tensor
 
-from verl_old.models.mcore.util import preprocess_packed_seqs
+from verl.models.mcore.util import preprocess_packed_seqs
 from verl.utils.kernel.linear_cross_entropy import linear_cross_entropy
-from verl_old.utils.megatron_utils import unwrap_model
-from verl_old.utils.model import CausalLMOutputForPPO
+from verl.utils.megatron_utils import unwrap_model
+from verl.utils.model import CausalLMOutputForPPO
 
 from .util import postprocess_packed_seqs_for_dict_output
 

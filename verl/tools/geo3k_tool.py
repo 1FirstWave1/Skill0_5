@@ -19,7 +19,7 @@ import os
 from typing import Any, Optional
 from uuid import uuid4
 
-from verl_old.utils.reward_score import geo3k
+from verl.utils.reward_score import geo3k
 from verl.utils.rollout_trace import rollout_trace_op
 
 from .base_tool import BaseTool

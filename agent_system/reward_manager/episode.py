@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from verl_old import DataProto
+from verl import DataProto
 import torch
 import numpy as np
 

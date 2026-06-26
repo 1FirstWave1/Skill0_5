@@ -19,7 +19,7 @@ from abc import ABC, abstractmethod
 
 from torch.distributed.device_mesh import DeviceMesh
 
-from verl_old import DataProto
+from verl import DataProto
 from verl.workers.config import HFModelConfig, RewardModelConfig
 
 __all__ = ["BasePPORewardModel"]

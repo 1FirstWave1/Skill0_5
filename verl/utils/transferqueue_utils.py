@@ -22,7 +22,7 @@ from functools import wraps
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
-    from verl_old.single_controller.base.decorator import Dispatch
+    from verl.single_controller.base.decorator import Dispatch
 
 from tensordict import TensorDict
 
@@ -40,7 +40,7 @@ except ImportError:
         pass
 
 
-from verl_old.protocol import DataProto
+from verl.protocol import DataProto
 
 logger = logging.getLogger(__name__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
@@ -178,8 +178,8 @@ def _compute_need_collect(dispatch_mode: "dict | Dispatch", args: list) -> bool:
         data parallel rank for the mesh specified in collect_fn.args[0] to determine
         if this worker should collect data.
     """
-    from verl_old.single_controller.base.decorator import Dispatch
-    from verl_old.single_controller.base.worker import Worker
+    from verl.single_controller.base.decorator import Dispatch
+    from verl.single_controller.base.worker import Worker
 
     if dispatch_mode is None or isinstance(dispatch_mode, Dispatch):
         return True

@@ -38,7 +38,7 @@ from dataclasses import dataclass
 import torch
 import torch.distributed as dist
 
-from verl_old.utils.device import get_device_capability, get_device_name, is_cuda_available
+from verl.utils.device import get_device_capability, get_device_name, is_cuda_available
 
 try:
     import triton
@@ -51,7 +51,7 @@ except ImportError:
     HAVE_TRITON = False
     SUPPORT_CUDA_TMA = False
 
-from verl_old.utils.device import get_torch_device
+from verl.utils.device import get_torch_device
 
 if not HAVE_TRITON:
     from contextlib import contextmanager

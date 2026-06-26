@@ -29,12 +29,12 @@ from megatron.core.transformer.enums import AttnBackend
 from ray.util.state import api
 from transformers import GenerationConfig
 
-from verl_old.models.weight_loader_registry import get_weight_saver
-from verl_old.utils.device import get_device_name, get_torch_device
-from verl_old.utils.fs import is_non_local, local_mkdir_safe
-from verl_old.utils.logger import log_with_rank
+from verl.models.weight_loader_registry import get_weight_saver
+from verl.utils.device import get_device_name, get_torch_device
+from verl.utils.fs import is_non_local, local_mkdir_safe
+from verl.utils.logger import log_with_rank
 from verl.utils.megatron.dist_checkpointing import load_dist_checkpointing, save_dist_checkpointing
-from verl_old.utils.megatron_utils import (
+from verl.utils.megatron_utils import (
     get_dist_checkpoint_path,
     get_hf_model_checkpoint_path,
     get_transformer_config_checkpoint_path,
@@ -620,7 +620,7 @@ class MegatronCheckpointManager(BaseCheckpointManager):
                         log_with_rank(
                             f"Uploading checkpoint to {hdfs_path}", rank=self.rank, logger=logger, log_only_rank_0=True
                         )
-                        from verl_old.utils import hdfs_io
+                        from verl.utils import hdfs_io
 
                         hdfs_io.makedirs(hdfs_path, exist_ok=True)
                         hdfs_io.copy(src=hf_model_ckpt_path, dst=hdfs_path, dirs_exist_ok=True)
@@ -639,7 +639,7 @@ class MegatronCheckpointManager(BaseCheckpointManager):
             if self.rank == 0:
                 if hdfs_path is not None:
                     log_with_rank(f"Uploading checkpoint to {hdfs_path}", rank=self.rank, logger=logger)
-                    from verl_old.utils import hdfs_io
+                    from verl.utils import hdfs_io
 
                     hdfs_io.makedirs(hdfs_path, exist_ok=True)
                     hdfs_io.copy(src=dist_checkpoint_path, dst=hdfs_path, dirs_exist_ok=True)

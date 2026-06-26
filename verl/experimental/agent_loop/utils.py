@@ -47,9 +47,9 @@ def resolve_config_path(config_path: str) -> str:
 
     # Try relative to verl project root (where verl package is installed)
     try:
-        import verl_old
+        import verl
 
-        verl_package_dir = os.path.abspath(os.path.dirname(verl_old.__file__))
+        verl_package_dir = os.path.abspath(os.path.dirname(verl.__file__))
 
         # Strategy 1: For development/editable installs.
         project_root = os.path.dirname(verl_package_dir)

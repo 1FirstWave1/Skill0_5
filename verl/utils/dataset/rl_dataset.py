@@ -31,7 +31,7 @@ from PIL import Image
 from torch.utils.data import Dataset
 from transformers import PreTrainedTokenizer, ProcessorMixin
 
-from verl_old.utils.import_utils import load_extern_object
+from verl.utils.import_utils import load_extern_object
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +144,7 @@ class RLHFDataset(Dataset):
         self._read_files_and_tokenize()
 
     def _download(self, use_origin_parquet=False):
-        from verl_old.utils.fs import copy_to_local
+        from verl.utils.fs import copy_to_local
 
         data_files = self.data_files if not use_origin_parquet else self.original_data_files
         for i, parquet_file in enumerate(data_files):
@@ -188,7 +188,7 @@ class RLHFDataset(Dataset):
             video_key = self.video_key
 
             if processor is not None:
-                from verl_old.utils.dataset.vision_utils import process_image, process_video
+                from verl.utils.dataset.vision_utils import process_image, process_video
 
                 def doc2len(doc) -> int:
                     try:

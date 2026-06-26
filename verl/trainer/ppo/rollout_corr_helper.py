@@ -69,8 +69,8 @@ from typing import Any, Optional
 
 import torch
 
-import verl_old.utils.torch_functional as verl_F
-from verl_old.protocol import DataProto
+import verl.utils.torch_functional as verl_F
+from verl.protocol import DataProto
 from verl.trainer.config.algorithm import RolloutCorrectionConfig
 from verl.workers.config.actor import PolicyLossConfig
 

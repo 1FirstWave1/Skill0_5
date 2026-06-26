@@ -19,7 +19,7 @@ import os
 from contextvars import ContextVar
 from typing import Optional
 
-from verl_old.utils.ray_utils import get_event_loop
+from verl.utils.ray_utils import get_event_loop
 
 _trace_enabled: ContextVar[bool] = ContextVar("_trace_enabled", default=True)
 

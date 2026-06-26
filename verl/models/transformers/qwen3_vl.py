@@ -276,7 +276,7 @@ def forward_with_torch_backend(
     temperature: float = 1.0,
     **kwargs,
 ) -> "Qwen3VLCausalLMOutputForPPO":
-    from verl_old.utils.experimental.torch_functional import FusedLinearForPPO
+    from verl.utils.experimental.torch_functional import FusedLinearForPPO
 
     outputs = self.model(input_ids, **kwargs)
     hidden_states = outputs[0]

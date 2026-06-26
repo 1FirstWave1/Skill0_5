@@ -18,7 +18,7 @@ Preprocess the Geometry3k dataset to parquet format
 import os
 import datasets
 
-from verl_old.utils.hdfs_io import copy, makedirs
+from verl.utils.hdfs_io import copy, makedirs
 import argparse
 
 if __name__ == '__main__':

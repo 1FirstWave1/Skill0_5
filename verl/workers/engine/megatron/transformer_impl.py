@@ -24,26 +24,26 @@ from megatron.core.pipeline_parallel import get_forward_backward_func
 from omegaconf import OmegaConf
 from tensordict import TensorDict
 
-from verl_old.models.mcore import get_mcore_weight_converter
-from verl_old.trainer.config import CheckpointConfig
-from verl_old.utils import tensordict_utils as tu
-from verl_old.utils.checkpoint.megatron_checkpoint_manager import MegatronCheckpointManager
+from verl.models.mcore import get_mcore_weight_converter
+from verl.trainer.config import CheckpointConfig
+from verl.utils import tensordict_utils as tu
+from verl.utils.checkpoint.megatron_checkpoint_manager import MegatronCheckpointManager
 from verl.utils.dataset.dataset_utils import DatasetPadMode
-from verl_old.utils.debug import log_gpu_memory_usage
-from verl_old.utils.device import get_device_id, get_device_name
-from verl_old.utils.megatron.pipeline_parallel import make_batch_generator
-from verl_old.utils.megatron.tensor_parallel import (
+from verl.utils.debug import log_gpu_memory_usage
+from verl.utils.device import get_device_id, get_device_name
+from verl.utils.megatron.pipeline_parallel import make_batch_generator
+from verl.utils.megatron.tensor_parallel import (
     vocab_parallel_entropy,
     vocab_parallel_log_probs_from_logits,
 )
-from verl_old.utils.megatron_utils import (
+from verl.utils.megatron_utils import (
     load_megatron_model_to_gpu,
     load_megatron_optimizer,
     offload_megatron_model_to_cpu,
     offload_megatron_optimizer,
     register_megatron_training_hooks,
 )
-from verl_old.utils.model import (
+from verl.utils.model import (
     extract_multi_modal_inputs,
     load_mcore_dist_weights,
 )
@@ -108,8 +108,8 @@ class MegatronEngine(BaseEngine):
         )
 
     def _build_tf_config(self):
-        from verl_old.utils.megatron_utils import mapping_string_to_attn_backend
-        from verl_old.utils.torch_dtypes import PrecisionType
+        from verl.utils.megatron_utils import mapping_string_to_attn_backend
+        from verl.utils.torch_dtypes import PrecisionType
 
         self.param_dtype = PrecisionType.to_dtype(self.engine_config.dtype)
         self.dtype = PrecisionType.to_dtype(self.param_dtype)
@@ -180,11 +180,11 @@ class MegatronEngine(BaseEngine):
         )
 
     def _build_megatron_module(self):
-        from verl_old.utils.megatron_utils import (
+        from verl.utils.megatron_utils import (
             McoreModuleWrapperConfig,
             make_megatron_module,
         )
-        from verl_old.utils.model import print_model_size
+        from verl.utils.model import print_model_size
 
         # TODO: add more cases
         is_value_model = (
@@ -238,7 +238,7 @@ class MegatronEngine(BaseEngine):
         return module
 
     def _build_optimizer(self):
-        from verl_old.utils.megatron.optimizer import (
+        from verl.utils.megatron.optimizer import (
             get_megatron_optimizer,
             init_megatron_optim_config,
         )
@@ -253,7 +253,7 @@ class MegatronEngine(BaseEngine):
         return optimizer
 
     def _build_lr_scheduler(self):
-        from verl_old.utils.megatron.optimizer import get_megatron_optimizer_param_scheduler
+        from verl.utils.megatron.optimizer import get_megatron_optimizer_param_scheduler
 
         optimizer_scheduler = get_megatron_optimizer_param_scheduler(
             optimizer=self.optimizer, config=self.optimizer_config
@@ -377,7 +377,7 @@ class MegatronEngine(BaseEngine):
         Returns:
             current_lr (float or list[float]): Updated learning rate(s).
         """
-        from verl_old.utils.megatron.optimizer import get_megatron_last_lr
+        from verl.utils.megatron.optimizer import get_megatron_last_lr
 
         self.lr_scheduler.step(1)
         return get_megatron_last_lr(self.optimizer)
@@ -621,7 +621,7 @@ class MegatronEngineWithLMHead(MegatronEngine):
         else:
             raise NotImplementedError(f"Pad mode {pad_mode} is not supported for megatron engine")
 
-        from verl_old.models.mcore import get_mcore_forward_no_padding_fn
+        from verl.models.mcore import get_mcore_forward_no_padding_fn
 
         if use_fused_kernels:
             raise NotImplementedError("Fused kernels are not supported for megatron engine")
@@ -702,7 +702,7 @@ class MegatronEngineWithValueHead(MegatronEngineWithLMHead):
         input_ids = model_inputs["input_ids"]
         multi_modal_inputs = model_inputs["multi_modal_inputs"]
 
-        from verl_old.models.mcore import get_mcore_forward_no_padding_fn
+        from verl.models.mcore import get_mcore_forward_no_padding_fn
 
         forward_fn = get_mcore_forward_no_padding_fn(self.model_config.hf_config)
 
