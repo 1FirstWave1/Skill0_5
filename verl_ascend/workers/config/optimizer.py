@@ -176,7 +176,9 @@ def build_optimizer(parameters, config: FSDPOptimizerConfig):
         "weight_decay": config.weight_decay,
     }
 
-    optimizer_name_lower = config.optimizer.lower()
+    optimizer_name = config.get("optimizer", "AdamW")
+    optimizer_impl = config.get("optimizer_impl", "torch.optim")
+    optimizer_name_lower = optimizer_name.lower()
     if "adam" in optimizer_name_lower or "ademamix" in optimizer_name_lower:
         optimizer_args["betas"] = config.betas
 
@@ -184,15 +186,15 @@ def build_optimizer(parameters, config: FSDPOptimizerConfig):
         optimizer_args.update(config.override_optimizer_config)
 
     try:
-        module = importlib.import_module(config.optimizer_impl)
-        optimizer_cls = getattr(module, config.optimizer)
+        module = importlib.import_module(optimizer_impl)
+        optimizer_cls = getattr(module, optimizer_name)
     except ImportError as e:
         raise ImportError(
-            f"Failed to import module '{config.optimizer_impl}'. Make sure the package is installed. Error: {e}"
+            f"Failed to import module '{optimizer_impl}'. Make sure the package is installed. Error: {e}"
         ) from e
     except AttributeError as e:
         raise AttributeError(
-            f"Optimizer '{config.optimizer}' not found in module '{config.optimizer_impl}'. "
+            f"Optimizer '{optimizer_name}' not found in module '{optimizer_impl}'. "
             f"Available optimizers: {dir(module)}"
         ) from e
 

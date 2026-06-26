@@ -24,7 +24,7 @@ from verl.utils.profiler import ProfilerConfig
 
 from .engine import FSDPEngineConfig, McoreEngineConfig
 from .model import HFModelConfig
-from .optimizer import OptimizerConfig
+from .optimizer import FSDPOptimizerConfig, OptimizerConfig
 
 __all__ = ["CriticConfig", "FSDPCriticConfig", "McoreCriticConfig", "FSDPCriticModelCfg"]
 
@@ -198,6 +198,7 @@ class FSDPCriticConfig(CriticConfig):
     forward_micro_batch_size_per_gpu: int = 1
     ulysses_sequence_parallel_size: int = 1
     grad_clip: float = 1.0
+    optim: FSDPOptimizerConfig = field(default_factory=FSDPOptimizerConfig)
 
     def __post_init__(self):
         """Validate FSDP critic configuration parameters."""

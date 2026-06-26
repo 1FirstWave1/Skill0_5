@@ -23,7 +23,7 @@ from verl.utils.profiler.config import ProfilerConfig
 
 from .engine import FSDPEngineConfig, McoreEngineConfig
 from .model import HFModelConfig
-from .optimizer import OptimizerConfig
+from .optimizer import FSDPOptimizerConfig, OptimizerConfig
 
 __all__ = ["PolicyLossConfig", "RouterReplayConfig", "ActorConfig", "FSDPActorConfig", "McoreActorConfig"]
 
@@ -280,6 +280,7 @@ class FSDPActorConfig(ActorConfig):
     ulysses_sequence_parallel_size: int = 1
     entropy_from_logits_with_chunking: bool = False
     entropy_checkpointing: bool = False
+    optim: FSDPOptimizerConfig = field(default_factory=FSDPOptimizerConfig)
     fsdp_config: FSDPEngineConfig = field(default_factory=FSDPEngineConfig)
     use_remove_padding: bool = False
     use_rollout_log_probs: bool = False

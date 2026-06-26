@@ -35,7 +35,13 @@ class CheckpointConfig(BaseConfig):
 
     save_contents: list[str] = field(default_factory=lambda: ["model", "optimizer", "extra"])
     load_contents: list[str] = field(default_factory=lambda: ["model", "optimizer", "extra"])
+    contents: Optional[list[str]] = None
     async_save: bool = False
+
+    def __post_init__(self):
+        if self.contents is not None:
+            self.save_contents = self.contents
+            self.load_contents = self.contents
 
 
 @dataclass
