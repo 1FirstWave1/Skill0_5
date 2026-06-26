@@ -103,6 +103,7 @@ python3 -m verl.trainer.main_ppo_ood \
     +env.max_steps=30 \
     +env.rollout.n=$group_size \
     +env.resources_per_worker.num_cpus=$num_cpus_per_env_worker \
+    +env.alfworld.eval_dataset=eval_in_distribution \
     +env.use_skills_only_memory=True \
     +env.skills_only_memory.skills_json_path=memory_data/alfworld_ood/claude_style_skills_id.json \
     +env.skills_only_memory.retrieval_mode=embedding \
