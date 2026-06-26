@@ -87,6 +87,41 @@ class Worker(WorkerHelper):
 
     fused_worker_attr_name = "fused_worker_dict"
 
+    def _register_dispatch_collect_info(self, mesh_name: str, dp_rank: int, is_collect: bool):
+        """Register dispatch/collect metadata for dynamic mesh dispatch."""
+        if mesh_name in self.__dispatch_dp_rank or mesh_name in self.__collect_dp_rank:
+            raise ValueError(f"mesh_name {mesh_name} has been registered")
+        self.__dispatch_dp_rank[mesh_name] = dp_rank
+        self.__collect_dp_rank[mesh_name] = is_collect
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def _query_dispatch_info(self, mesh_name: str):
+        assert mesh_name in self.__dispatch_dp_rank, f"{mesh_name} is not registered in {self.__class__.__name__}"
+        return self.__dispatch_dp_rank[mesh_name]
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def _query_collect_info(self, mesh_name: str):
+        return self.query_collect_info(mesh_name)
+
+    def query_collect_info(self, mesh_name: str):
+        assert mesh_name in self.__collect_dp_rank, f"{mesh_name} is not registered in {self.__class__.__name__}"
+        return self.__collect_dp_rank[mesh_name]
+
+    def get_dispatch_collect(self):
+        return {"dispatch_dp_rank": self.__dispatch_dp_rank, "collect_dp_rank": self.__collect_dp_rank}
+
+    def set_dispatch_collect(self, mesh_name: str, dispatch_dp_rank: dict[str, int], collect_dp_rank: dict[str, bool]):
+        assert mesh_name not in self.__dispatch_dp_rank, (
+            f"{mesh_name} is already registered, {self.__dispatch_dp_rank.keys()}"
+        )
+        assert mesh_name not in self.__collect_dp_rank, (
+            f"{mesh_name} is already registered, {self.__collect_dp_rank.keys()}"
+        )
+        for dp_rank in dispatch_dp_rank.values():
+            self.__dispatch_dp_rank[mesh_name] = dp_rank
+        for is_collect in collect_dp_rank.values():
+            self.__collect_dp_rank[mesh_name] = is_collect
+
     @classmethod
     def env_keys(cls):
         """The keys of the environment variables that are used to configure the Worker."""
@@ -159,6 +194,8 @@ class Worker(WorkerHelper):
         ###
 
         self.fused_worker_dict = {}
+        self.__dispatch_dp_rank = {}
+        self.__collect_dp_rank = {}
 
     def get_fused_worker_by_name(self, worker_name: str):
         """Get a fused worker by its name.
