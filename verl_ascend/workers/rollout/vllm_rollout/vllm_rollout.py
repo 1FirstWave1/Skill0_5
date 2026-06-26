@@ -42,8 +42,10 @@ from verl import DataProto
 from verl.third_party.vllm import LLM, vllm_version
 from verl.third_party.vllm import parallel_state as vllm_ps
 from verl.utils.debug import GPUMemoryLogger
+from verl.utils.device import is_npu_available
 from verl.utils.torch_functional import get_response_mask, pad_sequence_to_length
 from verl.workers.rollout.base import BaseRollout
+from verl.workers.rollout.vllm_rollout.ascend_runtime import prepare_ascend_vllm_runtime
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
@@ -119,6 +121,7 @@ class vLLMRollout(BaseRollout):
         engine_kwargs = {key: val for key, val in engine_kwargs.items() if val is not None}
         lora_kwargs = kwargs.pop('lora_kwargs', {})
         self.lora_kwargs = lora_kwargs
+        prepare_ascend_vllm_runtime()
         self.inference_engine = LLM(
             actor_module,
             tokenizer=tokenizer,
@@ -138,7 +141,8 @@ class vLLMRollout(BaseRollout):
         )
 
         # Offload vllm model to reduce peak memory usage
-        self.inference_engine.offload_model_weights()
+        if not is_npu_available:
+            self.inference_engine.offload_model_weights()
 
         kwargs = dict(
             n=1,

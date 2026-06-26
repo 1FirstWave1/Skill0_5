@@ -48,6 +48,7 @@ from verl.utils.device import is_npu_available
 from verl.utils.ray_utils import ray_noset_visible_devices
 from verl.utils.torch_functional import get_response_mask, pad_2d_list_to_length
 from verl.workers.rollout.base import BaseRollout
+from verl.workers.rollout.vllm_rollout.ascend_runtime import ascend_vllm_engine_kwargs, prepare_ascend_vllm_runtime
 
 from vllm.config import CompilationConfig, LoRAConfig
 from vllm.lora.request import LoRARequest
@@ -177,6 +178,13 @@ class vLLMRollout(BaseRollout):
         if config.get("limit_images", None):  # support for multi-image data
             engine_kwargs["limit_mm_per_prompt"] = {"image": config.get("limit_images")}
 
+        prepare_ascend_vllm_runtime()
+        npu_engine_kwargs = ascend_vllm_engine_kwargs(config, engine_kwargs)
+        enable_sleep_mode = engine_kwargs.pop("enable_sleep_mode", npu_engine_kwargs.pop("enable_sleep_mode", True))
+        enable_prefix_caching = engine_kwargs.pop(
+            "enable_prefix_caching", npu_engine_kwargs.pop("enable_prefix_caching", True)
+        )
+
         compilation_config = {}
 
         cudagraph_capture_sizes = config.get("cudagraph_capture_sizes")
@@ -194,7 +202,7 @@ class vLLMRollout(BaseRollout):
 
         self.inference_engine = LLM(
             model=model_path,
-            enable_sleep_mode=True,
+            enable_sleep_mode=enable_sleep_mode,
             tensor_parallel_size=tensor_parallel_size,
             distributed_executor_backend="external_launcher",
             dtype=config.dtype,
@@ -208,16 +216,18 @@ class vLLMRollout(BaseRollout):
             disable_log_stats=config.disable_log_stats,
             max_num_batched_tokens=max_num_batched_tokens,
             enable_chunked_prefill=config.enable_chunked_prefill,
-            enable_prefix_caching=True,
+            enable_prefix_caching=enable_prefix_caching,
             trust_remote_code=trust_remote_code,
             seed=config.get("seed", 0),
             **compilation_config,
             **self.lora_kwargs,
+            **npu_engine_kwargs,
             **engine_kwargs,
         )
 
         # Offload vllm model to reduce peak memory usage
-        self.inference_engine.sleep(level=1)
+        if not is_npu_available:
+            self.inference_engine.sleep(level=1)
 
         kwargs = dict(
             n=1,

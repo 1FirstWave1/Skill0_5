@@ -69,10 +69,18 @@ from typing import List
 
 from msgspec import field
 from packaging import version as vs
-from vllm.lora.models import LoRAModel
-from vllm.lora.request import LoRARequest
-from vllm.lora.utils import get_adapter_absolute_path
-from vllm.lora.worker_manager import LRUCacheWorkerLoRAManager
+try:
+    from vllm.lora.models import LoRAModel
+    from vllm.lora.request import LoRARequest
+    from vllm.lora.utils import get_adapter_absolute_path
+    from vllm.lora.worker_manager import LRUCacheWorkerLoRAManager
+    VLLM_LORA_AVAILABLE = True
+except ImportError:
+    LoRAModel = None
+    LoRARequest = object
+    get_adapter_absolute_path = None
+    LRUCacheWorkerLoRAManager = None
+    VLLM_LORA_AVAILABLE = False
 
 from verl.third_party.vllm import get_version
 
@@ -145,14 +153,22 @@ def patch_vllm_moe_model_weight_loader(model):
                 param.weight_loader = experts.weight_loader
 
 
-class TensorLoRARequest(LoRARequest):
-    peft_config:dict = field(default=None)
-    lora_tensors:dict = field(default=None)
+if VLLM_LORA_AVAILABLE:
+    class TensorLoRARequest(LoRARequest):
+        peft_config:dict = field(default=None)
+        lora_tensors:dict = field(default=None)
+else:
+    class TensorLoRARequest:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("vLLM LoRA support is unavailable in this vLLM installation.")
 
 
 class VLLMHijack():
     @staticmethod
     def hijack():
+        if not VLLM_LORA_AVAILABLE:
+            return
+
         def hijack__load_adapter(self, lora_request: TensorLoRARequest) -> LoRAModel:
             """
             based on vllm.lora.worker_manager.WorkerLoRAManager._load_adapter, support load adapter with lora tensors

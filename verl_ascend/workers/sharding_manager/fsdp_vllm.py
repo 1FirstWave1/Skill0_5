@@ -41,7 +41,13 @@ from verl.utils.debug import GPUMemoryLogger, log_gpu_memory_usage
 from verl.utils.device import get_device_id, get_device_name, get_torch_device
 from verl.utils.fsdp_utils import fsdp_version, layered_summon_lora_params, load_fsdp_model_to_gpu, offload_fsdp_model_to_cpu
 from verl.utils.torch_functional import check_cuda_is_available
-from verl.utils.vllm_utils import TensorLoRARequest, VLLMHijack, is_version_ge, patch_vllm_moe_model_weight_loader
+from verl.utils.vllm_utils import (
+    TensorLoRARequest,
+    VLLM_LORA_AVAILABLE,
+    VLLMHijack,
+    is_version_ge,
+    patch_vllm_moe_model_weight_loader,
+)
 
 from .base import BaseShardingManager
 
@@ -107,7 +113,7 @@ class FSDPVLLMShardingManager(BaseShardingManager):
             self.gen_random_states = None
 
         self.base_sync_done: bool = 'dummy' not in load_format
-        if is_version_ge(pkg='vllm', minver='0.7.3'):
+        if VLLM_LORA_AVAILABLE and is_version_ge(pkg='vllm', minver='0.7.3'):
             VLLMHijack.hijack()
 
     @GPUMemoryLogger(role="fsdp vllm sharding_manager", logger=logger)
