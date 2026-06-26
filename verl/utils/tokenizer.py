@@ -13,6 +13,7 @@
 # limitations under the License.
 """Utils for tokenization."""
 
+import types
 import warnings
 
 __all__ = ["hf_tokenizer", "hf_processor"]
@@ -52,7 +53,9 @@ def hf_tokenizer(name_or_path, correct_pad_token=True, correct_gemma2=True, **kw
     if correct_gemma2 and isinstance(name_or_path, str) and "gemma-2-2b-it" in name_or_path:
         # the EOS token in gemma2 is ambiguious, which may worsen RL performance.
         # https://huggingface.co/google/gemma-2-2b-it/commit/17a01657f5c87135bcdd0ec7abb4b2dece04408a
-        warnings.warn("Found gemma-2-2b-it tokenizer. Set eos_token and eos_token_id to <end_of_turn> and 107.", stacklevel=1)
+        warnings.warn(
+            "Found gemma-2-2b-it tokenizer. Set eos_token and eos_token_id to <end_of_turn> and 107.", stacklevel=1
+        )
         kwargs["eos_token"] = "<end_of_turn>"
         kwargs["eos_token_id"] = 107
     tokenizer = AutoTokenizer.from_pretrained(name_or_path, **kwargs)
@@ -70,12 +73,38 @@ def hf_processor(name_or_path, **kwargs):
     Returns:
         transformers.ProcessorMixin: The pretrained processor.
     """
-    from transformers import AutoProcessor
+    from transformers import AutoConfig, AutoProcessor
 
     try:
         processor = AutoProcessor.from_pretrained(name_or_path, **kwargs)
-    except Exception:
+        config = AutoConfig.from_pretrained(name_or_path, **kwargs)
+
+        # Bind vlm model's get_rope_index method to processor
+        processor.config = config
+        match processor.__class__.__name__:
+            case "Qwen2VLProcessor":
+                from transformers.models.qwen2_vl import Qwen2VLModel
+
+                processor.get_rope_index = types.MethodType(Qwen2VLModel.get_rope_index, processor)
+            case "Qwen2_5_VLProcessor":
+                from transformers.models.qwen2_5_vl import Qwen2_5_VLModel
+
+                processor.get_rope_index = types.MethodType(Qwen2_5_VLModel.get_rope_index, processor)
+            case "Qwen3VLProcessor":
+                from transformers.models.qwen3_vl import Qwen3VLModel
+
+                processor.get_rope_index = types.MethodType(Qwen3VLModel.get_rope_index, processor)
+            case "Glm4vImageProcessor":
+                from transformers.models.glm4v import Glm4vModel
+
+                processor.get_rope_index = types.MethodType(Glm4vModel.get_rope_index, processor)
+            case _:
+                raise ValueError(f"Unsupported processor type: {processor.__class__.__name__}")
+    except Exception as e:
         processor = None
+        # TODO(haibin.lin): try-catch should be removed after adding transformer version req to setup.py to avoid
+        # silent failure
+        warnings.warn(f"Failed to create processor: {e}. This may affect multimodal processing", stacklevel=1)
     # Avoid load tokenizer, see:
     # https://github.com/huggingface/transformers/blob/v4.49.0/src/transformers/models/auto/processing_auto.py#L344
     if processor is not None and "Processor" not in processor.__class__.__name__:

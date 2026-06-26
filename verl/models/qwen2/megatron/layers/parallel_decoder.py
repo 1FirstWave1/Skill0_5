@@ -18,14 +18,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 from megatron.core import ModelParallelConfig
 from torch import nn
 from transformers import Qwen2Config
 
-from verl.utils.megatron_utils import TransformerConfig, convert_config
+from verl_old.utils.megatron_utils import TransformerConfig, convert_config
 
 from .parallel_attention import ParallelQwen2Attention, ParallelQwen2AttentionRmPad
 from .parallel_mlp import ParallelQwen2MLP
@@ -49,7 +49,7 @@ class ParallelQwen2DecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-    ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
+    ) -> tuple[torch.FloatTensor, Optional[tuple[torch.FloatTensor, torch.FloatTensor]]]:
         """
         Args:
             hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
@@ -119,7 +119,7 @@ class ParallelQwen2DecoderLayerRmPad(nn.Module):
         indices: torch.Tensor = None,
         cu_seqlens: int = None,
         max_seqlen_in_batch: int = None,
-    ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
+    ) -> tuple[torch.FloatTensor, Optional[tuple[torch.FloatTensor, torch.FloatTensor]]]:
         residual = hidden_states  # (total_nnz // sp, 1, hidden_size)
 
         hidden_states = self.input_layernorm(hidden_states)
@@ -148,3 +148,4 @@ class ParallelQwen2DecoderLayerRmPad(nn.Module):
         outputs = hidden_states
 
         return outputs
+

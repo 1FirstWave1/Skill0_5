@@ -19,7 +19,7 @@ import random
 from typing import List, Tuple, Dict
 import math
 from PIL import Image
-from verl import DataProto
+from verl_old import DataProto
 
 def to_list_of_dict(batch: DataProto) -> list[dict]:
     tensors = batch.batch
@@ -182,4 +182,5 @@ def filter_group_data(batch_list : List[Dict],
     tool_callings = tool_callings[keep_indices]
 
     return batch_list, episode_rewards, episode_lengths, success, traj_uid, tool_callings
+
 

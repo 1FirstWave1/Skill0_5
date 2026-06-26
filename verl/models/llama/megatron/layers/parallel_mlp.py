@@ -23,8 +23,8 @@ from megatron.core import parallel_state as mpu
 from torch import nn
 from transformers.activations import ACT2FN
 
-from verl.models.llama.megatron.layers.parallel_linear import MergedColumnParallelLinear
-from verl.utils.megatron import tensor_parallel as tp_utils
+from verl_old.models.llama.megatron.layers.parallel_linear import MergedColumnParallelLinear
+from verl_old.utils.megatron import tensor_parallel as tp_utils
 
 
 class ParallelLlamaMLP(nn.Module):
@@ -72,3 +72,4 @@ class ParallelLlamaMLP(nn.Module):
         gate_up = self.gate_up_proj(x)[0]
         gate, up = gate_up.split(self.gate_size, dim=-1)
         return self.down_proj(self.act_fn(gate) * up)[0]
+

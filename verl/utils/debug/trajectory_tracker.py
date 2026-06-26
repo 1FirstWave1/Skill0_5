@@ -25,7 +25,7 @@ from collections import deque
 import ray
 import torch
 
-from verl.utils.hdfs_io import copy, makedirs
+from verl_old.utils.hdfs_io import copy, makedirs
 
 remote_copy = ray.remote(copy)
 
@@ -80,7 +80,9 @@ def get_trajectory_tracker():
     hdfs_dir = os.getenv("VERL_TRACKER_HDFS_DIR", default=None)
     verbose = os.getenv("VERL_TRACKER_VERBOSE", default="0") == "1"
     assert hdfs_dir is not None
-    tracker = TrajectoryTracker.options(name="global_tracker", get_if_exists=True, lifetime="detached").remote(hdfs_dir, verbose)
+    tracker = TrajectoryTracker.options(name="global_tracker", get_if_exists=True, lifetime="detached").remote(
+        hdfs_dir, verbose
+    )
     return tracker
 
 
@@ -105,3 +107,4 @@ if __name__ == "__main__":
 
     tracker = get_trajectory_tracker()
     ray.get(tracker.wait_for_hdfs.remote())
+

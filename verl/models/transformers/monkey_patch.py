@@ -23,9 +23,9 @@ import torch
 from transformers.modeling_flash_attention_utils import _flash_attention_forward
 from transformers.modeling_utils import PreTrainedModel
 
-from verl.utils.import_utils import is_trl_available
-from verl.utils.transformers_compat import is_transformers_version_in_range
-from verl.utils.ulysses import (
+from verl_old.utils.import_utils import is_trl_available
+from verl_old.utils.transformers_compat import is_transformers_version_in_range
+from verl_old.utils.ulysses import (
     gather_heads_scatter_seq,
     gather_seq_scatter_heads,
     get_ulysses_sequence_parallel_group,
@@ -76,9 +76,9 @@ def _ulysses_flash_attention_forward(
     ulysses_sp_size = get_ulysses_sequence_parallel_world_size()
 
     ########## AlltoAll for Ulysses ##########
-    if ulysses_sp_size > 1:
-        assert position_ids is not None, "position_ids is required for Ulysses sequence parallelism"
-
+    # TODO: Disable sp for ViT, there's no elegent way to determine whether it's ViT or not.
+    # Use `position_ids` as condition since ViT doesn't pass it to flash attention.
+    if ulysses_sp_size > 1 and position_ids is not None:
         # NOTE: repeat kv heads to be divided by sequence parallel. Instead of repeating nheads_q//nheads_k,
         # we choose to repeat sp_size//nheads_k, since flash_attention supports MQA/GQA.
         # For example:
@@ -110,7 +110,7 @@ def _ulysses_flash_attention_forward(
     )
 
     ########## AlltoAll for Ulysses ##########
-    if ulysses_sp_size > 1:
+    if ulysses_sp_size > 1 and position_ids is not None:
         # (bsz, seq_len, n_head/n, head_dim) -> (bsz, seq_len/n, n_head, head_dim)
         attn_output = gather_heads_scatter_seq(attn_output, seq_dim=1, head_dim=2)
 
@@ -156,7 +156,7 @@ def patch_vlm_for_ulysses_input_slicing(model_class: type):
                         if num_visual_in_shard > 0 and num_visual_before > 0:
                             # Calculate which visual embeddings belong to this shard
                             # We need to find the offset of visual tokens in this shard
-                            from verl.utils.ulysses import get_ulysses_sequence_parallel_rank
+                            from verl_old.utils.ulysses import get_ulysses_sequence_parallel_rank
 
                             rank = get_ulysses_sequence_parallel_rank()
                             seq_len = original_visual_mask.shape[1]
@@ -215,12 +215,12 @@ def patch_forward_with_backends(
     forward_with_torch_backend_function = model.__class__.forward
     forward_with_triton_backend_function = model.__class__.forward
     if model.config.model_type in ["qwen2_5_vl", "qwen2_vl"]:
-        from verl.models.transformers.qwen2_vl import forward_with_torch_backend, forward_with_triton_backend
+        from verl_old.models.transformers.qwen2_vl import forward_with_torch_backend, forward_with_triton_backend
 
         forward_with_torch_backend_function = forward_with_torch_backend
         forward_with_triton_backend_function = forward_with_triton_backend
     elif model.config.model_type in ["qwen3_vl", "qwen3_vl_moe"]:
-        from verl.models.transformers.qwen3_vl import forward_with_torch_backend, forward_with_triton_backend
+        from verl_old.models.transformers.qwen3_vl import forward_with_torch_backend, forward_with_triton_backend
 
         forward_with_torch_backend_function = forward_with_torch_backend
         forward_with_triton_backend_function = forward_with_triton_backend
@@ -251,13 +251,31 @@ def apply_monkey_patch(
     use_remove_padding: bool = True,
     use_fused_kernels: bool = False,
     fused_kernels_backend: str = None,
+    use_tiled_mlp: bool = False,
+    tiled_mlp_shards: int = 4,
 ):
     """
-    Apply monkey patch to the models for ulysses sequence parallel and fused kernel.
+    Apply monkey patch to the models for ulysses sequence parallel, fused kernel, and tiled MLP.
 
     In the end of this function forward function of the model is patched for fused kernel.
     If the model is not supported with fused kernel, please return after patch.
+
+    Args:
+        model: The model to apply the monkey patch.
+        ulysses_sp_size: The size of ulysses sequence parallel.
+        use_remove_padding: Whether to use remove padding.
+        use_fused_kernels: Whether to use fused kernels.
+        fused_kernels_backend: The backend to use for fused kernels.
+        use_tiled_mlp: Whether to use TiledMLP for memory-efficient MLP computation.
+        tiled_mlp_shards: Number of shards for TiledMLP (higher = lower memory, slightly slower).
     """
+
+    # Apply TiledMLP monkey patch for memory-efficient MLP computation
+    if use_tiled_mlp:
+        from verl.models.transformers.tiled_mlp import apply_tiled_mlp_monkey_patch
+
+        model_type = getattr(model.config, "model_type", None)
+        apply_tiled_mlp_monkey_patch(num_shards=tiled_mlp_shards, model_type=model_type)
 
     """Replace _flash_attention_forward to _ulysses_flash_attention_forward"""
     module = sys.modules[model.__module__]
@@ -311,7 +329,7 @@ def apply_monkey_patch(
             Qwen2_5_VLModel = SimpleNamespace(forward=None)
             Qwen2VLModel = SimpleNamespace(forward=None)
 
-        from verl.models.transformers.qwen2_vl import forward_with_normal_backend, qwen2_vl_base_forward
+        from verl_old.models.transformers.qwen2_vl import forward_with_normal_backend, qwen2_vl_base_forward
 
         Qwen2_5_VLModel.forward = qwen2_vl_base_forward
         Qwen2VLModel.forward = qwen2_vl_base_forward
@@ -332,7 +350,7 @@ def apply_monkey_patch(
             from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLFlashAttention2 as Qwen2VLAttention
 
         if use_remove_padding or ulysses_sp_size > 1:
-            from verl.models.transformers.qwen2_vl import qwen2_vl_attn_forward
+            from verl_old.models.transformers.qwen2_vl import qwen2_vl_attn_forward
 
             Qwen2_5_VLAttention.forward = qwen2_vl_attn_forward
             Qwen2VLAttention.forward = qwen2_vl_attn_forward
@@ -356,13 +374,21 @@ def apply_monkey_patch(
             Qwen3VLMoeTextModel,
         )
 
-        from verl.models.transformers.qwen3_vl import forward_with_normal_backend, qwen3_vl_base_forward
+        from verl_old.models.transformers.qwen3_vl import (
+            forward_with_normal_backend,
+            patch_qwen3_vl_moe_sparse_moe_block_forward,
+            qwen3_vl_base_forward,
+        )
 
         Qwen3VLModel.forward = qwen3_vl_base_forward
         Qwen3VLMoeModel.forward = qwen3_vl_base_forward
         Qwen3VLForConditionalGeneration.forward = forward_with_normal_backend
         Qwen3VLMoeForConditionalGeneration.forward = forward_with_normal_backend
         print(f"Monkey patch {model.__class__.__name__} model forward")
+
+        # Step 1.5: patch Qwen3VLMoeTextSparseMoeBlock to fix transformers 4.57.3 bug
+        if model.config.model_type == "qwen3_vl_moe" and is_transformers_version_in_range(max_version="4.57.3"):
+            patch_qwen3_vl_moe_sparse_moe_block_forward()
 
         # Step 2: patch input for multimodal sequence parallelism
         if ulysses_sp_size > 1:
@@ -399,7 +425,7 @@ def apply_monkey_patch(
     elif model.config.model_type == "kimi_vl":
         if use_remove_padding or ulysses_sp_size > 1:
             # TODO: Changes need to be made when transformers are adapted.
-            from verl.models.transformers.kimi_vl import _ulysses_flash_attn_forward
+            from verl_old.models.transformers.kimi_vl import _ulysses_flash_attn_forward
 
             module.DeepseekV3FlashAttention2.forward = _ulysses_flash_attn_forward
             print("Monkey patch FlashAttention2.forward in KimiVL")
@@ -423,3 +449,4 @@ def apply_monkey_patch(
             print(f"Monkey patch _flash_attention_forward in {flash_attention.__name__}")
 
     patch_forward_with_backends(model, use_fused_kernels=use_fused_kernels, fused_kernels_backend=fused_kernels_backend)
+

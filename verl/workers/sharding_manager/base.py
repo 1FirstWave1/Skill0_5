@@ -15,10 +15,13 @@
 Sharding manager to implement HybridEngine
 """
 
-from verl import DataProto
+from verl_old import DataProto
 
 
 class BaseShardingManager:
+    def __init__(self):
+        self.timing = {}
+
     def __enter__(self):
         pass
 
@@ -30,3 +33,4 @@ class BaseShardingManager:
 
     def postprocess_data(self, data: DataProto) -> DataProto:
         return data
+

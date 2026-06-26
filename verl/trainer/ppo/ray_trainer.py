@@ -39,28 +39,28 @@ from torch.utils.data import Dataset, Sampler
 from torchdata.stateful_dataloader import StatefulDataLoader
 from tqdm import tqdm
 
-from verl import DataProto
-from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto
-from verl.single_controller.base import Worker
-from verl.single_controller.ray import RayClassWithInitArgs, RayResourcePool, RayWorkerGroup
-from verl.single_controller.ray.base import create_colocated_worker_cls
-from verl.trainer.ppo import core_algos
-from verl.trainer.ppo.core_algos import agg_loss
-from verl.trainer.ppo.metric_utils import (
+from verl_old import DataProto
+from verl_old.protocol import pad_dataproto_to_divisor, unpad_dataproto
+from verl_old.single_controller.base import Worker
+from verl_old.single_controller.ray import RayClassWithInitArgs, RayResourcePool, RayWorkerGroup
+from verl_old.single_controller.ray.base import create_colocated_worker_cls
+from verl_old.trainer.ppo import core_algos
+from verl_old.trainer.ppo.core_algos import agg_loss
+from verl_old.trainer.ppo.metric_utils import (
     compute_data_metrics,
     compute_throughout_metrics,
     compute_timing_metrics,
     process_validation_metrics,
 )
-from verl.trainer.ppo.reward import compute_reward, compute_reward_async
-from verl.utils.checkpoint.checkpoint_manager import find_latest_ckpt_path
-from verl.utils.metric import (
+from verl_old.trainer.ppo.reward import compute_reward, compute_reward_async
+from verl_old.utils.checkpoint.checkpoint_manager import find_latest_ckpt_path
+from verl_old.utils.metric import (
     reduce_metrics,
 )
-from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
-from verl.utils.torch_functional import masked_mean
-from verl.utils.tracking import ValidationGenerationsLogger
-from verl.workers.rollout.async_server import AsyncLLMServerManager
+from verl_old.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
+from verl_old.utils.torch_functional import masked_mean
+from verl_old.utils.tracking import ValidationGenerationsLogger
+from verl_old.workers.rollout.async_server import AsyncLLMServerManager
 try:
     from gigpo import core_gigpo
 except ImportError:
@@ -617,7 +617,7 @@ class RayPPOTrainer:
         Creates the train and validation dataloaders.
         """
         # TODO: we have to make sure the batch size is divisible by the dp size
-        from verl.trainer.main_ppo import create_rl_dataset, create_rl_sampler
+        from verl_old.trainer.main_ppo import create_rl_dataset, create_rl_sampler
 
         if train_dataset is None:
             train_dataset = create_rl_dataset(self.config.data.train_files, self.config.data, self.tokenizer, self.processor)
@@ -628,7 +628,7 @@ class RayPPOTrainer:
         if train_sampler is None:
             train_sampler = create_rl_sampler(self.config.data, self.train_dataset)
         if collate_fn is None:
-            from verl.utils.dataset.rl_dataset import collate_fn as default_collate_fn
+            from verl_old.utils.dataset.rl_dataset import collate_fn as default_collate_fn
 
             collate_fn = default_collate_fn
 
@@ -2327,7 +2327,7 @@ class RayPPOTrainer:
         """
         from omegaconf import OmegaConf
 
-        from verl.utils.tracking import Tracking
+        from verl_old.utils.tracking import Tracking
 
         logger = Tracking(
             project_name=self.config.trainer.project_name,
@@ -2485,3 +2485,6 @@ class RayPPOTrainer:
                     pprint(f"Final validation metrics: {last_val_metrics}")
                     progress_bar.close()
                     return
+
+
+

@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from verl import DataProto
+from verl_old import DataProto
 import torch
 import numpy as np
 
@@ -94,3 +94,4 @@ class EpisodeRewardManager:
             }
         else:
             return reward_tensor
+

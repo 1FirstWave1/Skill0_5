@@ -28,9 +28,9 @@ from transformers.models.qwen2_vl.modeling_qwen2_vl import (
 )
 from transformers.utils import is_flash_attn_2_available, is_flash_attn_greater_or_equal_2_10
 
-from verl.utils.device import is_npu_available
-from verl.utils.transformers_compat import is_transformers_version_in_range
-from verl.utils.ulysses import (
+from verl_old.utils.device import is_npu_available
+from verl_old.utils.transformers_compat import is_transformers_version_in_range
+from verl_old.utils.ulysses import (
     gather_heads_scatter_seq,
     gather_seq_scatter_heads,
     get_ulysses_sequence_parallel_group,
@@ -396,7 +396,7 @@ def process_position_ids(position_ids: torch.Tensor) -> torch.Tensor:
     if position_ids.ndim != 3 or position_ids.size(0) != 4:
         # we concat the text position ids with the 3D vision position ids by default
         # see https://github.com/huggingface/transformers/pull/39447
-        raise ValueError(f"position_ids should be a 3D tensor of shape (4, batch_size, seq_length), got {position_ids.shape}")
+        raise ValueError("position_ids should be a 3D tensor of shape (4, batch_size, seq_length).")
 
     if is_transformers_version_in_range(max_version="4.53.3"):
         # transformers < 4.54.0 only accepts vision position ids, so we discard the text position ids here
@@ -487,7 +487,7 @@ def forward_with_torch_backend(
     temperature: float = 1.0,
     **kwargs,
 ) -> tuple | Qwen2VLCausalLMOutputForPPO:
-    from verl.utils.experimental.torch_functional import FusedLinearForPPO
+    from verl_old.utils.experimental.torch_functional import FusedLinearForPPO
 
     outputs = qwen2_vl_forward(self, input_ids, **kwargs)
     hidden_states = outputs[0]
@@ -546,3 +546,4 @@ def forward_with_triton_backend(
         entropy=entropy,
         hidden_states=outputs.hidden_states,
     )
+

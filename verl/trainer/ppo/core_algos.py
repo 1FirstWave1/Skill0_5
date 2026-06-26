@@ -25,7 +25,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-import verl.utils.torch_functional as verl_F
+import verl_old.utils.torch_functional as verl_F
 
 
 class AdaptiveKLController:
@@ -925,3 +925,5 @@ def compute_pf_ppo_reweight_data(
     resampled_data.meta_info = resampled_meta_info
 
     return resampled_data
+
+

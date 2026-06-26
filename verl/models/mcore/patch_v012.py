@@ -19,8 +19,15 @@
 
 def apply_patch():
     import torch
-    from megatron.core.transformer.multi_latent_attention import MLASelfAttention, apply_rotary_pos_emb, deprecate_inference_params, gather_from_sequence_parallel_region, gather_from_tensor_model_parallel_region, scatter_to_sequence_parallel_region
     from megatron.core import parallel_state, tensor_parallel
+    from megatron.core.transformer.multi_latent_attention import (
+        MLASelfAttention,
+        apply_rotary_pos_emb,
+        deprecate_inference_params,
+        gather_from_sequence_parallel_region,
+        gather_from_tensor_model_parallel_region,
+        scatter_to_sequence_parallel_region,
+    )
 
     def patch_get_query_key_value_tensors(
         self,
@@ -44,7 +51,9 @@ def apply_patch():
         # =========================================
         # Prepare RoPE and seqlen related params
         # =========================================
-        rotary_seq_len = self.rotary_pos_emb.get_rotary_seq_len(inference_context, None, hidden_states, self.config, packed_seq_params)
+        rotary_seq_len = self.rotary_pos_emb.get_rotary_seq_len(
+            inference_context, None, hidden_states, self.config, packed_seq_params
+        )
 
         # rotary_pos_emb:[s, b, 1, 64]
         mscale = 1.0
@@ -87,13 +96,17 @@ def apply_patch():
             # kv_combined: [s, b, (kv_lora_rank + qk_pos_emb_head_dim)]
             kv_combined = gather_from_tensor_model_parallel_region(kv_combined)
             # kv_compressed:[s, b, kv_lora_rank], k_pos_emb: [s, b, qk_pos_emb_head_dim]
-            kv_compressed, k_pos_emb = torch.split(kv_combined, [self.config.kv_lora_rank, self.config.qk_pos_emb_head_dim], dim=-1)
+            kv_compressed, k_pos_emb = torch.split(
+                kv_combined, [self.config.kv_lora_rank, self.config.qk_pos_emb_head_dim], dim=-1
+            )
             if self.config.sequence_parallel:
                 # kv_compressed:[s / TP, b, kv_lora_rank]
                 kv_compressed = scatter_to_sequence_parallel_region(kv_compressed)
         else:
             # kv_compressed:[s / TP, b, kv_lora_rank], k_pos_emb: [s / TP, b, qk_pos_emb_head_dim]
-            kv_compressed, k_pos_emb = torch.split(kv_combined, [self.config.kv_lora_rank, self.config.qk_pos_emb_head_dim], dim=-1)
+            kv_compressed, k_pos_emb = torch.split(
+                kv_combined, [self.config.kv_lora_rank, self.config.qk_pos_emb_head_dim], dim=-1
+            )
             if parallel_state.get_tensor_model_parallel_world_size() > 1:
                 # k_pos_emb: [s, b, qk_pos_emb_head_dim]
                 k_pos_emb = gather_from_sequence_parallel_region(k_pos_emb)
@@ -126,16 +139,21 @@ def apply_patch():
                 self.config.qk_head_dim + self.config.v_head_dim,
             )
 
+            cp_size = parallel_state.get_context_parallel_world_size()
             if inference_context is not None:
                 # add offset to the sequence start for inference
                 sequence_start = inference_context.sequence_len_offset
                 sequence_end = sequence_start + q_len
                 rotary_pos_emb = rotary_pos_emb[sequence_start:sequence_end]
-            else:
+            elif packed_seq_params is None or cp_size == 1:
                 # Shorten rotary_pos_emb to the sequence length when inference_params
                 # is not provided. This makes sure we can run forward directly with
                 # any sequence length. During training, the sequence length is always
-                # the full rotary_pos_emb length.
+                # the full rotary_pos_emb length, except for sequence packing + CP.
+                # When sequence packing and context parallel are both enabled, the
+                # position embedding will not split rotary_pos_emb, so it may exceed
+                # the sequence length on this CP rank, but we need the full rotary_pos_emb
+                # to cover the full sequence, so we do not shorten it here.
                 rotary_pos_emb = rotary_pos_emb[0:q_len]
 
             # [s, b, 64] -> [s, b, 1, 64]
@@ -191,7 +209,9 @@ def apply_patch():
 
         if self.recompute_up_proj:
             self.qkv_up_checkpoint = tensor_parallel.CheckpointWithoutOutput()
-            query, key, value = self.qkv_up_checkpoint.checkpoint(qkv_up_proj_and_rope_apply, q_compressed, kv_compressed, k_pos_emb, rotary_pos_emb)
+            query, key, value = self.qkv_up_checkpoint.checkpoint(
+                qkv_up_proj_and_rope_apply, q_compressed, kv_compressed, k_pos_emb, rotary_pos_emb
+            )
         else:
             query, key, value = qkv_up_proj_and_rope_apply(q_compressed, kv_compressed, k_pos_emb, rotary_pos_emb)
 

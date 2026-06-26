@@ -29,10 +29,10 @@ import hydra
 import ray
 from omegaconf import OmegaConf
 
-from verl.trainer.ppo.ray_trainer import RayPPOTrainer
-from verl.trainer.ppo.reward import load_reward_manager
-from verl.trainer.constants_ppo import get_ppo_ray_runtime_env
-from verl.trainer.main_ppo import create_rl_dataset, create_rl_sampler
+from verl_old.trainer.ppo.ray_trainer import RayPPOTrainer
+from verl_old.trainer.ppo.reward import load_reward_manager
+from verl_old.trainer.constants_ppo import get_ppo_ray_runtime_env
+from verl_old.trainer.main_ppo import create_rl_dataset, create_rl_sampler
 
 
 @hydra.main(config_path="config", config_name="ppo_trainer", version_base=None)
@@ -43,7 +43,7 @@ def main(config):
 def run_ppo_webshop_ood(config) -> None:
     if not ray.is_initialized():
         default_runtime_env = get_ppo_ray_runtime_env()
-        ray_init_kwargs = config.get("ray_init", {})
+        ray_init_kwargs = config.get("ray_kwargs", {}).get("ray_init", {})
         runtime_env_kwargs = ray_init_kwargs.get("runtime_env", {})
         runtime_env = OmegaConf.merge(default_runtime_env, runtime_env_kwargs)
         ray_init_kwargs = OmegaConf.create({**ray_init_kwargs, "runtime_env": runtime_env})
@@ -59,7 +59,7 @@ class TaskRunner:
     def run(self, config):
         from pprint import pprint
         from omegaconf import OmegaConf
-        from verl.utils.fs import copy_to_local
+        from verl_old.utils.fs import copy_to_local
 
         pprint(OmegaConf.to_container(config, resolve=True))
         OmegaConf.resolve(config)
@@ -79,14 +79,14 @@ class TaskRunner:
         OmegaConf.update(config, "data.val_ood_batch_size", val_ood_env_num, force_add=True)
 
         # --- Tokenizer / Processor ---
-        from verl.utils import hf_processor, hf_tokenizer
+        from verl_old.utils import hf_processor, hf_tokenizer
 
         trust_remote_code = config.data.get("trust_remote_code", False)
         tokenizer = hf_tokenizer(local_path, trust_remote_code=trust_remote_code)
         processor = hf_processor(local_path, trust_remote_code=trust_remote_code, use_fast=True)
 
         if config.actor_rollout_ref.rollout.name in ["vllm"]:
-            from verl.utils.vllm_utils import is_version_ge
+            from verl.utils.vllm import is_version_ge
             if config.actor_rollout_ref.model.get("lora_rank", 0) > 0:
                 if not is_version_ge(pkg="vllm", minver="0.7.3"):
                     raise NotImplementedError("PPO LoRA is not supported before vllm 0.7.3")
@@ -94,22 +94,22 @@ class TaskRunner:
         # --- Worker classes ---
         if config.actor_rollout_ref.actor.strategy in ["fsdp", "fsdp2"]:
             assert config.critic.strategy in ["fsdp", "fsdp2"]
-            from verl.single_controller.ray import RayWorkerGroup
-            from verl.workers.fsdp_workers import ActorRolloutRefWorker, AsyncActorRolloutRefWorker, CriticWorker
+            from verl_old.single_controller.ray import RayWorkerGroup
+            from verl_old.workers.fsdp_workers import ActorRolloutRefWorker, AsyncActorRolloutRefWorker, CriticWorker
 
             actor_rollout_cls = AsyncActorRolloutRefWorker if config.actor_rollout_ref.rollout.mode == "async" else ActorRolloutRefWorker
             ray_worker_group_cls = RayWorkerGroup
         elif config.actor_rollout_ref.actor.strategy == "megatron":
             assert config.actor_rollout_ref.actor.strategy == config.critic.strategy
-            from verl.single_controller.ray.megatron import NVMegatronRayWorkerGroup
-            from verl.workers.megatron_workers import ActorRolloutRefWorker, CriticWorker
+            from verl_old.single_controller.ray import RayWorkerGroup
+            from verl_old.workers.megatron_workers import ActorRolloutRefWorker, CriticWorker
 
             actor_rollout_cls = ActorRolloutRefWorker
-            ray_worker_group_cls = NVMegatronRayWorkerGroup
+            ray_worker_group_cls = RayWorkerGroup
         else:
             raise NotImplementedError
 
-        from verl.trainer.ppo.ray_trainer import ResourcePoolManager, Role
+        from verl_old.trainer.ppo.ray_trainer import ResourcePoolManager, Role
 
         role_worker_mapping = {
             Role.ActorRollout: ray.remote(actor_rollout_cls),
@@ -127,9 +127,9 @@ class TaskRunner:
 
         if config.reward_model.enable:
             if config.reward_model.strategy in ["fsdp", "fsdp2"]:
-                from verl.workers.fsdp_workers import RewardModelWorker
+                from verl_old.workers.fsdp_workers import RewardModelWorker
             elif config.reward_model.strategy == "megatron":
-                from verl.workers.megatron_workers import RewardModelWorker
+                from verl_old.workers.megatron_workers import RewardModelWorker
             else:
                 raise NotImplementedError
             role_worker_mapping[Role.RewardModel] = ray.remote(RewardModelWorker)
@@ -159,7 +159,7 @@ class TaskRunner:
         # --- Datasets ---
         # WebShop uses placeholder datasets (like ALFWorld); real tasks come from the environment.
         from torch.utils.data import Subset
-        from verl.utils.dataset.rl_dataset import collate_fn
+        from verl_old.utils.dataset.rl_dataset import collate_fn
 
         train_dataset = create_rl_dataset(config.data.train_files, config.data, tokenizer, processor)
 
@@ -202,3 +202,6 @@ class TaskRunner:
 
 if __name__ == "__main__":
     main()
+
+
+

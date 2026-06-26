@@ -15,12 +15,11 @@
 import numbers
 
 import torch
-from apex.normalization.fused_layer_norm import fused_rms_norm_affine
 from megatron.core import ModelParallelConfig
 from torch import nn
 from transformers import LlamaConfig
 
-from verl.utils.megatron import sequence_parallel as sp_utils
+from verl_old.utils.megatron import sequence_parallel as sp_utils
 
 
 class ParallelLlamaRMSNorm(nn.Module):
@@ -39,6 +38,8 @@ class ParallelLlamaRMSNorm(nn.Module):
             sp_utils.mark_parameter_as_sequence_parallel(self.weight)
 
     def forward(self, hidden_states):
+        from apex.normalization.fused_layer_norm import fused_rms_norm_affine
+
         return fused_rms_norm_affine(
             input=hidden_states,
             weight=self.weight,
@@ -46,3 +47,4 @@ class ParallelLlamaRMSNorm(nn.Module):
             eps=self.variance_epsilon,
             memory_efficient=True,
         )
+

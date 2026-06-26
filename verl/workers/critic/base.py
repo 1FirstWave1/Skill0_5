@@ -19,7 +19,7 @@ from abc import ABC, abstractmethod
 
 import torch
 
-from verl import DataProto
+from verl_old import DataProto
 
 __all__ = ["BasePPOCritic"]
 
@@ -38,3 +38,4 @@ class BasePPOCritic(ABC):
     def update_critic(self, data: DataProto):
         """Update the critic"""
         pass
+

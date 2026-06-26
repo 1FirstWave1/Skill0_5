@@ -1,7 +1,6 @@
 set -x
 ENGINE=${1:-vllm}
 shift  # Remove first argument so $@ only contains extra params
-export VLLM_ATTENTION_BACKEND=FLASH_ATTN
 
 # ==================== WandB (optional) ====================
 # export WANDB_API_KEY="your_key_here"
@@ -85,6 +84,7 @@ python3 -m verl.trainer.main_ppo_ood \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=8 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=$ENGINE \
+    actor_rollout_ref.rollout.mode=sync \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.65 \
     actor_rollout_ref.rollout.enable_chunked_prefill=True \
     actor_rollout_ref.rollout.enforce_eager=False \
@@ -97,6 +97,7 @@ python3 -m verl.trainer.main_ppo_ood \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     actor_rollout_ref.actor.use_invalid_action_penalty=True \
     actor_rollout_ref.actor.invalid_action_penalty_coef=0.1 \
+    reward_model.reward_manager=episode \
     env.env_name=alfworld/AlfredTWEnv \
     env.seed=0 \
     env.max_steps=30 \

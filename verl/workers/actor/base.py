@@ -16,11 +16,10 @@ The base class for Actor
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict
 
 import torch
 
-from verl import DataProto
+from verl_old import DataProto
 
 __all__ = ["BasePPOActor"]
 
@@ -52,7 +51,7 @@ class BasePPOActor(ABC):
         pass
 
     @abstractmethod
-    def update_policy(self, data: DataProto) -> Dict:
+    def update_policy(self, data: DataProto) -> dict:
         """Update the policy with an iterator of DataProto
 
         Args:
@@ -65,3 +64,4 @@ class BasePPOActor(ABC):
 
         """
         pass
+
