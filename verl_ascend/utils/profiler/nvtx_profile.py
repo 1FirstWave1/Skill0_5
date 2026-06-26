@@ -85,7 +85,7 @@ def mark_annotate(
 def marked_timer(
     name: str,
     timing_raw: dict[str, float],
-    color: str = None,
+    color: Optional[str] = None,
     domain: Optional[str] = None,
     category: Optional[str] = None,
 ):
