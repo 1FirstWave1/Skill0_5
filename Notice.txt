@@ -5,3 +5,15 @@ Copyright 2023-2024 Bytedance Ltd. and/or its affiliates
 Additional modifications and contributions:
 
 Copyright 2025 Nanyang Technological University (NTU), Singapore and the verl-agent (GiGPO) team.
+
+agent_system: 创建agent环境，给予reward，实际进行roll out (也就是说这里推理)
+memory_data: 保存相关skill文件
+skill_generation: 创建skill，存在训练中创建的接口，但默认未开启
+verl:修改点：verl/trainer/main_ppo_ood.py
+verl/trainer/main_ppo_webshop_ood.py
+verl/trainer/ppo/ray_trainer.py
+verl/trainer/ppo/core_algos.py
+verl/workers/actor/dp_actor.py
+verl/utils/dataset/rl_dataset.py
+verl/workers/config/actor.py
+verl/workers/rollout/vllm_rollout/vllm_rollout.py

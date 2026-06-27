@@ -86,6 +86,7 @@ def logprobs_from_logits(logits, labels, inplace_backward=True):
     Returns:
         Tensor: Log-probabilities of the target labels, shape logits.shape[:-1].
     """
+    labels = labels.to(device=logits.device, non_blocking=True)
     if FLAH_ATTN_CROSS_ENTROPY_LOSS_AVAILABLE:
         batch_dim = logits.shape[:-1]
         last_dim = logits.shape[-1]
@@ -975,4 +976,3 @@ def use_original_torch_compile():
             yield
     except Exception:
         yield
-

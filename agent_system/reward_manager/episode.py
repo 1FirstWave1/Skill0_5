@@ -64,9 +64,9 @@ class EpisodeRewardManager:
 
             extra_info = data_item.non_tensor_batch.get('extra_info', None)
             multi_modal_inputs = data_item.non_tensor_batch.get('multi_modal_inputs', None)
-            if multi_modal_inputs is not None:
+            if multi_modal_inputs is not None and 'pixel_values' in multi_modal_inputs:
                 pixel_values = multi_modal_inputs['pixel_values']
-                image_grid_thw = multi_modal_inputs['image_grid_thw']
+                image_grid_thw = multi_modal_inputs.get('image_grid_thw', None)
 
 
             episode_rewards = data_item.non_tensor_batch['episode_rewards']

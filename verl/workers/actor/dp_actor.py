@@ -362,7 +362,9 @@ class DataParallelPPOActor(BasePPOActor):
         entropy_lst = []
         for micro_batch in micro_batches:
             if isinstance(micro_batch, DataProto):
-                micro_batch = {**micro_batch.batch, **micro_batch.non_tensor_batch}
+                micro_batch = {**micro_batch.batch.to(get_torch_device().current_device()), **micro_batch.non_tensor_batch}
+            else:
+                micro_batch = micro_batch.to(get_torch_device().current_device())
             with torch.no_grad():
                 entropy, log_probs = self._forward_micro_batch(micro_batch, temperature=temperature, calculate_entropy=calculate_entropy)
             log_probs_lst.append(log_probs)
@@ -376,7 +378,7 @@ class DataParallelPPOActor(BasePPOActor):
         if use_dynamic_bsz:
             indices = list(itertools.chain.from_iterable(indices))
             assert len(indices) == log_probs.size(0), f"{len(indices)} vs. {log_probs.size()}"
-            revert_indices = torch.tensor(get_reverse_idx(indices), dtype=torch.long)
+            revert_indices = torch.tensor(get_reverse_idx(indices), dtype=torch.long, device=log_probs.device)
             log_probs = log_probs[revert_indices]
 
         return log_probs, entropys
