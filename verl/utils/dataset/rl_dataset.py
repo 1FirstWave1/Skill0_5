@@ -32,6 +32,8 @@ from torch.utils.data import Dataset
 from transformers import PreTrainedTokenizer, ProcessorMixin
 
 from verl.utils.import_utils import load_extern_object
+from verl.utils.model import compute_position_id_with_mask
+import verl.utils.torch_functional as verl_F
 
 logger = logging.getLogger(__name__)
 
@@ -334,15 +336,71 @@ class RLHFDataset(Dataset):
         return messages
 
     def __getitem__(self, item):
-        """For rollout, apply_chat_template has been moved to AgentLoop, so we only return raw_prompt here."""
+        """Return tokenized prompts for Skill0.5's legacy trainer and raw chat for agent-loop rollout."""
         row_dict: dict = self.dataframe[item]
-        row_dict["raw_prompt"] = self._build_messages(row_dict)
+        messages = self._build_messages(row_dict)
 
-        # TODO(wuxibin): We still need a dummy tensor to make sure DataProto.batch is not empty.
-        # Remove this after deprecate DataProto by TensorDict.
-        row_dict["dummy_tensor"] = torch.tensor([0], dtype=torch.uint8)
+        apply_kwargs = dict(**self.apply_chat_template_kwargs)
+        if self.tool_schemas is not None:
+            apply_kwargs["tools"] = self.tool_schemas
 
-        # add index for each prompt
+        if self.processor is not None:
+            raw_prompt = self.processor.apply_chat_template(
+                messages, add_generation_prompt=True, tokenize=False, **apply_kwargs
+            )
+
+            images = None
+            videos = None
+            multi_modal_data = {}
+            model_inputs = self.processor(text=[raw_prompt], images=images, videos=videos, return_tensors="pt")
+
+            input_ids = model_inputs.pop("input_ids")
+            attention_mask = model_inputs.pop("attention_mask")
+
+            row_dict["multi_modal_data"] = multi_modal_data
+            row_dict["multi_modal_inputs"] = dict(model_inputs)
+            row_dict["multi_modal_inputs"].pop("second_per_grid_ts", None)
+        else:
+            raw_prompt = self.tokenizer.apply_chat_template(
+                messages, add_generation_prompt=True, tokenize=False, **apply_kwargs
+            )
+            model_inputs = self.tokenizer(raw_prompt, return_tensors="pt", add_special_tokens=False)
+            input_ids = model_inputs.pop("input_ids")
+            attention_mask = model_inputs.pop("attention_mask")
+
+        input_ids, attention_mask = verl_F.postprocess_data(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            max_length=self.max_prompt_length,
+            pad_token_id=self.tokenizer.pad_token_id,
+            left_pad=True,
+            truncation=self.truncation,
+        )
+        position_ids = compute_position_id_with_mask(attention_mask)
+
+        row_dict["input_ids"] = input_ids[0]
+        row_dict["attention_mask"] = attention_mask[0]
+        row_dict["position_ids"] = position_ids[0]
+
+        raw_prompt_ids = self.tokenizer.encode(raw_prompt, add_special_tokens=False)
+        if len(raw_prompt_ids) > self.max_prompt_length:
+            if self.truncation == "left":
+                raw_prompt_ids = raw_prompt_ids[-self.max_prompt_length :]
+            elif self.truncation == "right":
+                raw_prompt_ids = raw_prompt_ids[: self.max_prompt_length]
+            elif self.truncation == "middle":
+                left_half = self.max_prompt_length // 2
+                right_half = self.max_prompt_length - left_half
+                raw_prompt_ids = raw_prompt_ids[:left_half] + raw_prompt_ids[-right_half:]
+            elif self.truncation == "error":
+                raise RuntimeError(f"Prompt length {len(raw_prompt_ids)} is longer than {self.max_prompt_length}.")
+        row_dict["raw_prompt_ids"] = raw_prompt_ids
+
+        if self.return_raw_chat:
+            row_dict["raw_prompt"] = messages
+        if self.return_full_prompt:
+            row_dict["full_prompts"] = raw_prompt
+
         if "extra_info" not in row_dict or row_dict["extra_info"] is None:
             row_dict["extra_info"] = dict()
         index = row_dict.get("extra_info", {}).get("index", 0)

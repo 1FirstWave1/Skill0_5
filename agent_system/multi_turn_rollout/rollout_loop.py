@@ -251,7 +251,7 @@ class TrajectoryCollector:
         # Create DataProto with preserved metadata
         new_batch = DataProto.from_single_dict(
             data=batch,
-            meta_info=gen_batch.meta_info
+            meta_info=dict(gen_batch.meta_info)
         )
 
         return new_batch
@@ -411,10 +411,14 @@ class TrajectoryCollector:
                 non_tensor_batch_keys=non_tensor_batch_keys_to_pop,
             )
 
-            batch_input.meta_info = gen_batch.meta_info
+            batch_input.meta_info = dict(gen_batch.meta_info)
 
-            # pad to be divisible by dp_size
-            batch_input_padded, pad_size = pad_dataproto_to_divisor(batch_input, actor_rollout_wg.world_size)
+            # AgentLoopManager chunks the input by agent_loop_workers after the
+            # actor worker padding, so the batch must satisfy both divisors.
+            rollout_divisor = actor_rollout_wg.world_size
+            if rollout_generator is not None and rollout_generator.__class__.__name__ == "AgentLoopManager":
+                rollout_divisor = int(np.lcm(rollout_divisor, len(rollout_generator.agent_loop_workers)))
+            batch_input_padded, pad_size = pad_dataproto_to_divisor(batch_input, rollout_divisor)
             if rollout_generator is None:
                 batch_output_padded = actor_rollout_wg.generate_sequences(batch_input_padded)
             elif rollout_generator.__class__.__name__ == "AgentLoopManager":
@@ -427,6 +431,7 @@ class TrajectoryCollector:
                     rollout_generator.sleep()
             # # unpad
             batch_output = unpad_dataproto(batch_output_padded, pad_size=pad_size)
+            batch_output.meta_info.pop("timing", None)
 
             batch.non_tensor_batch['uid'] = uid_batch
             batch.non_tensor_batch['traj_uid'] = traj_uid

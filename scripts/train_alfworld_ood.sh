@@ -98,9 +98,11 @@ python3 -m verl.trainer.main_ppo_ood \
     +actor_rollout_ref.actor.use_invalid_action_penalty=True \
     +actor_rollout_ref.actor.invalid_action_penalty_coef=0.1 \
     reward_model.reward_manager=episode \
+    reward_model.use_reward_loop=False \
     +env.env_name=alfworld/AlfredTWEnv \
     +env.seed=0 \
     +env.max_steps=30 \
+    +env.history_length=2 \
     +env.rollout.n=$group_size \
     +env.resources_per_worker.num_cpus=$num_cpus_per_env_worker \
     +env.alfworld.eval_dataset=eval_in_distribution \
@@ -123,7 +125,7 @@ python3 -m verl.trainer.main_ppo_ood \
     +env.internalize.jsd_temperature=1.0 \
     actor_rollout_ref.actor.ppo_epochs=1 \
     trainer.critic_warmup=0 \
-    trainer.logger=['console','wandb'] \
+    trainer.logger=['console'] \
     trainer.project_name=$project_name \
     trainer.experiment_name=$experiment_name \
     trainer.default_local_dir=$OUTPUT_DIR \
