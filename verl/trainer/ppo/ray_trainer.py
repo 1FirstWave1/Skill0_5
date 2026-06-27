@@ -1859,7 +1859,6 @@ class RayPPOTrainer:
 
             # Merge skill (easy from Phase 1) + noskill (Phase 2)
             merged_easy = DataProto.concat([easy_skill_batch, noskill_output])
-            merged_easy = adjust_batch(self.config, merged_easy)
             merged_easy.batch["response_mask"] = compute_response_mask(merged_easy)
 
             # Reward on merged batch
@@ -1923,22 +1922,22 @@ class RayPPOTrainer:
             phase1_idxs_easy = np.where(phase1_mask)[0]
             easy_batch = merged_easy.select_idxs(phase1_idxs_easy)
             easy_batch.meta_info = merged_easy.meta_info.copy()
+            bs_easy_real = len(easy_batch)
+            easy_batch = adjust_batch(self.config, easy_batch)
             easy_batch.meta_info["global_token_num"] = torch.sum(easy_batch.batch["attention_mask"], dim=-1).tolist()
 
-            # Pad to divisible by world_size
-            world_size = self.config.trainer.n_gpus_per_node * self.config.trainer.nnodes
-            bs_easy = len(easy_batch)
-            remainder = bs_easy % world_size
-            if remainder != 0:
-                to_add = world_size - remainder
-                dup_indices = np.random.choice(bs_easy, to_add, replace=(to_add > bs_easy))
-                dup_proto = easy_batch.select_idxs(dup_indices)
-                dup_proto.batch["advantages"] = torch.zeros_like(dup_proto.batch["advantages"])
-                dup_proto.batch["response_mask"] = torch.zeros_like(dup_proto.batch["response_mask"])
-                if "loss_mask" in dup_proto.batch:
-                    dup_proto.batch["loss_mask"] = torch.zeros_like(dup_proto.batch["loss_mask"])
-                easy_batch = DataProto.concat([easy_batch, dup_proto])
-                easy_batch.meta_info["global_token_num"] = torch.sum(easy_batch.batch["attention_mask"], dim=-1).tolist()
+            # Mark and mask padding copied by adjust_batch so duplicated samples only satisfy
+            # worker divisibility constraints and do not contribute to optimization.
+            is_padding_easy = np.zeros(len(easy_batch), dtype=bool)
+            is_padding_easy[bs_easy_real:] = True
+            easy_batch.non_tensor_batch['_is_padding'] = is_padding_easy
+            n_padding_easy = int(is_padding_easy.sum())
+            if n_padding_easy > 0:
+                padding_indices_easy = torch.tensor(np.where(is_padding_easy)[0], dtype=torch.long)
+                easy_batch.batch["advantages"][padding_indices_easy] = 0.0
+                easy_batch.batch["response_mask"][padding_indices_easy] = 0.0
+                if "loss_mask" in easy_batch.batch:
+                    easy_batch.batch["loss_mask"][padding_indices_easy] = 0.0
 
             # Contrastive metrics
             if contrastive_context_types is not None:
@@ -1982,8 +1981,8 @@ class RayPPOTrainer:
                 old_log_prob = self.actor_rollout_wg.compute_log_prob(easy_batch)
                 entropys = old_log_prob.batch["entropys"]
                 # Compute entropy metric on real samples only (exclude padding)
-                entropys_real = entropys[:bs_easy]
-                response_masks_real = easy_batch.batch["response_mask"][:bs_easy]
+                entropys_real = entropys[:bs_easy_real]
+                response_masks_real = easy_batch.batch["response_mask"][:bs_easy_real]
                 loss_agg_mode = self.config.actor_rollout_ref.actor.loss_agg_mode
                 entropy_loss = agg_loss(loss_mat=entropys_real, loss_mask=response_masks_real, loss_agg_mode=loss_agg_mode)
                 metrics["actor/entropy_loss_easy"] = entropy_loss.detach().item()
@@ -2013,7 +2012,7 @@ class RayPPOTrainer:
                     easy_output_metrics["actor/kl_loss_easy"] = easy_output_metrics.pop("actor/kl_loss")
                 metrics.update(easy_output_metrics)
 
-            print(f"[Ours] Update 1 (easy/utilize): {bs_easy} samples")
+            print(f"[Ours] Update 1 (easy/utilize): {bs_easy_real} real + {n_padding_easy} padding samples")
             batch = easy_batch  # use as return batch if no medium
 
 
