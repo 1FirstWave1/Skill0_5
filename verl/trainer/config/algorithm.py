@@ -492,6 +492,14 @@ class AlgoConfig(BaseConfig):
     kl_ctrl: KLControlConfig = field(default_factory=KLControlConfig)
     use_pf_ppo: bool = False
     pf_ppo: dict[str, Any] = field(default_factory=dict)
+    gigpo: dict[str, Any] = field(
+        default_factory=lambda: {
+            "step_advantage_w": 1.0,
+            "mode": "mean_norm",
+            "enable_similarity": False,
+            "similarity_thresh": 0.95,
+        }
+    )
     filter_groups: Optional[FilterGroupsConfig] = None
     # Rollout Correction: corrects off-policy issues (policy mismatch, model staleness, distribution shifts)
     # Set to None to disable, use RolloutCorrectionConfig presets (e.g., .tis(), .mis()), or pass dict

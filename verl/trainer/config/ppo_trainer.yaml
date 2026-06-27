@@ -119,6 +119,21 @@ algorithm:
     # Power used for weight scaling in "pow" method
     weight_pow: 2.0
 
+  # GiGPO settings used by Skill0.5's custom multi-turn advantage path
+  gigpo:
+
+    # Weight of step-level advantage in GiGPO outcome advantage
+    step_advantage_w: 1.0
+
+    # Advantage normalization mode: "mean_norm" or "mean_std_norm"
+    mode: mean_norm
+
+    # Whether to use similarity-based anchor state grouping
+    enable_similarity: False
+
+    # Similarity threshold for GiGPO grouping
+    similarity_thresh: 0.95
+
 # config for the trainer
 trainer:
 
